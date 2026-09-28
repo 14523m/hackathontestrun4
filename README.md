@@ -1,56 +1,128 @@
-# Welcome to your Expo app 👋
+# HK CoolPath AI 🌳☀️
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+> **Hong Kong's heat problem should not only be measured. It should be
+> navigated — and prevented.**
 
-## Get started
+HK CoolPath AI is a spatial-AI platform built for a Hong Kong hackathon:
 
-1. Install dependencies
+- **For citizens & tourists** — find a cooler way through the city: compare
+  Fastest / Balanced / Coolest walking routes with duration-weighted heat
+  exposure, shade and time-of-day solar geometry.
+- **For planners & policymakers** — see tomorrow's heat before building
+  today's city: simulate interventions (trees, shaded corridors, ventilation)
+  on a **CONCEPTUAL / SIMULATED Northern Metropolis scenario** and compare
+  before/after heat, shade and cooling access.
 
-   ```bash
-   npm install
-   ```
+Everything runs locally in minutes and works **fully offline** in demo mode;
+live HKO weather is one environment variable away.
 
-2. Start the app
+---
 
-   ```bash
-   npx expo start
-   ```
+## Quick start
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+### 1. Backend (FastAPI)
 
 ```bash
-npm run reset-project
+cd backend
+python3 -m venv .venv
+./.venv/bin/pip install -e ".[dev]"
+./.venv/bin/uvicorn app.main:app --port 8000
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Open http://localhost:8000/docs for the interactive API.
 
-### Other setup steps
+### 2. Mobile (Expo, iOS/Android)
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```bash
+cd mobile
+npm install
+npx expo run:ios        # or: npx expo run:android  (dev build; MapLibre needs native code)
+```
 
-## Learn more
+The app connects to `http://localhost:8000` (iOS simulator). For a physical
+device put `EXPO_PUBLIC_API_URL=http://<LAN-IP>:8000` in `mobile/.env`.
 
-To learn more about developing your project with Expo, look at the following resources:
+### 3. Docker (backend only)
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+docker compose up --build
+```
 
-## Join the community
+## The 3-minute demo story
 
-Join our community of developers creating universal apps.
+1. **Cool Route tab** — pick the "Sai Ying Pun → Central" demo trip, drag the
+   time slider to 14:30, tap **Find Cool Route**:
+   ☀️ Fastest rides the sun-baked arterial (28 min, exposure ~60)
+   🌳 Coolest detours through the tree-lined boulevard (~37 min, exposure ~50).
+2. Drag time to 09:00 — exposure drops city-wide (time-dependent model).
+3. **Heat Map tab** — tap any hot cell: the app *explains* it
+   (➕ paved surface, ➖ vegetation …). Switch to Yau Tsim Mong for canyon heat.
+4. **Planner tab** — the Northern Metropolis (conceptual) scenario: toggle
+   *Add trees* + *Shaded corridors* and watch mean exposure, peak hotspot and
+   the Cooling Access Gap fall — **before the district is built**.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+All values shown are labelled modelled/simulated estimates — see
+[docs/responsible-ai.md](docs/responsible-ai.md).
+
+## Architecture (one-page view)
+
+```
+Mobile (Expo + MapLibre RN)  ──JSON──▶  FastAPI
+                                        ├── HeatMapService   (explainable layer)
+                                        ├── PlannerService   (what-if simulation)
+                                        ▼
+                     HeatPredictionService ◀── RouteEngine
+                     (sun position → shade → heat, per edge, per hour)
+                                        ▼
+        Providers: Weather (HKO live/mock) · Spatial · Cooling · Crowd · CityBrain
+```
+
+- **One heat model** used by map, routing and planner; interventions enter
+  through a declared `overrides` channel, never a second formula.
+- **Time-dependent**: NOAA solar position drives building-shadow geometry, so
+  the same street is shaded at 09:00 and sun-baked at 15:00.
+- **Explainable**: every score ships signed factor contributions.
+- **Data-mode seam**: `DATA_MODE=demo` (deterministic, offline) vs `live`
+  (HKO Open Data with stale-fallback). Details: [docs/architecture.md](docs/architecture.md).
+
+## Data sources
+
+Authoritative Hong Kong data is the priority: HKO Open Data (weather, live),
+Lands Department (buildings / 3D pedestrian network), Planning Department
+(land use), Landsat / Sentinel-2 (calibration, Tier-2), LCSD (venues & trees).
+The MVP uses clearly-labelled deterministic mocks for spatial data and the
+real HKO feed for weather. Full catalogue + integration requirements:
+[docs/data-sources.md](docs/data-sources.md).
+
+## Team workflow (multi-agent ready)
+
+Feature branches with strict ownership areas — map/UI, heat model, routing,
+planner, data providers — so five people can work simultaneously without
+collisions. Branch map, commands and PR rules:
+[docs/development.md](docs/development.md).
+
+```bash
+git checkout -b feature/cool-routing   # then small, focused commits
+```
+
+Commit style: `feat: add cool route scoring`, `fix: correct shadow direction`,
+`test: add route exposure tests`, `docs: update architecture`.
+
+## Tests
+
+```bash
+cd backend && ./.venv/bin/python -m pytest   # 40 tests: solar/shade, heat model, routing, providers, API
+cd mobile  && npx tsc --noEmit               # strict typecheck
+```
+
+## Honest-disclaimer banner
+
+Heat values are **modelled estimates**; demo data is **simulated**; the app
+does **not** replace official HKO warnings; real deployment requires
+validation against ground measurements. The Northern Metropolis layer is a
+conceptual scenario, not a prediction. See
+[docs/responsible-ai.md](docs/responsible-ai.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

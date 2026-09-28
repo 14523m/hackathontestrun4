@@ -1,0 +1,9 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATA_MODE: ${DATA_MODE:-demo}
+      HKO_BASE_URL: ${HKO_BASE_URL:-https://data.weather.gov.hk/weatherAPI/opendata/weather.php}
+    restart: unless-stopped

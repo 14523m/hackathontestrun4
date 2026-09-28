@@ -1,41 +1,52 @@
-This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
+# HK CoolPath AI — agent & developer guide
 
-## Expo has changed — do not trust your training data
-
-Expo ships breaking changes every SDK release. APIs you remember are likely renamed, moved, or removed. Before writing any code that touches an Expo, EAS, or React Native API:
-
-1. Read the major version of the `expo` package in `package.json`.
-2. Fetch the matching versioned docs: `https://docs.expo.dev/versions/v<major>.0.0/`
-3. For anything else, fetch https://docs.expo.dev/llms.txt — an index of all Expo docs with corrections to common LLM misconceptions. Follow its links to the specific page you need; never answer from memory.
+Monorepo: `backend/` (FastAPI, Python ≥3.9) + `mobile/` (Expo SDK 57, React
+Native, expo-router). Read `docs/architecture.md` and
+`docs/development.md` (branch map) before writing code.
 
 ## Commands
 
-Use `bunx` instead of `npx` if the project uses bun (`bun.lock` present).
+Backend (use the project venv):
 
 ```bash
-npx expo install <package>  # ALWAYS use instead of npm/yarn/pnpm/bun add — resolves SDK-compatible versions
-npx expo start              # start the dev server
-npx expo lint               # lint
-npx tsc --noEmit            # typecheck
-npx expo-doctor             # diagnose dependency and config issues
-npx expo install --fix      # fix incompatible package versions
+cd backend && ./.venv/bin/python -m pytest            # tests (must be green)
+cd backend && ./.venv/bin/python -m app.data.generate_static_data   # regen mock geodata
+cd backend && ./.venv/bin/uvicorn app.main:app --port 8000
 ```
 
-Run lint and typecheck before declaring any task done.
+Mobile (Expo has changed — do not trust training data; check the SDK docs):
 
-## Navigation & Routing
+```bash
+cd mobile && npx expo install <package>   # ALWAYS, not npm/pnpm/bun add
+cd mobile && npx tsc --noEmit             # typecheck (must be green)
+cd mobile && npx expo start               # dev server; dev build required for maps
+```
 
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
+MapLibre RN v11 API (installed): `Map` (not `MapView`), `Camera
+initialViewState={{center, zoom}}`, `GeoJSONSource data=…`, generic `Layer`
+with style-spec `paint`/`filter` (no `style` prop). Check
+`node_modules/@maplibre/maplibre-react-native/src/index.ts` for the truth.
 
-## Building with EAS
+## Architecture rules (agents MUST follow)
 
-Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.
-Docs: https://docs.expo.dev/eas/index.md
-
-## Rules
-
-- If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
-- Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
-- Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+1. **One heat model.** All heat goes through
+   `app/engines/heat/engine.py::HeatPredictionService`. Never add a second
+   formula; planner interventions and edge attributes enter via the declared
+   `overrides` channel.
+2. **Stable contracts.** `backend/app/schemas.py` ⇄
+   `mobile/src/services/api/types.ts` are the interface boundary. Changing
+   them is an architecture change: document why, update both sides together.
+3. **Providers are seams.** Real data integrations replace provider
+   implementations (`providers/`), never engines. Keep mock data separate
+   under `app/data/static/` (generated, committed, deterministic).
+4. **Stay in your lane.** Follow the branch map in `docs/development.md`;
+   do not restyle or "improve" another feature's files. If a change outside
+   your area is unavoidable, explain why in the PR.
+5. **Label everything honestly.** Simulated data is labelled simulated; HKO
+   observations are never presented as street-level measurements; the
+   Northern Metropolis is always CONCEPTUAL / SIMULATED. See
+   `docs/responsible-ai.md`.
+6. **Verify before done.** Backend: pytest green. Mobile: `tsc --noEmit`
+   green. New behaviour needs tests; architecture changes need doc updates.
+7. **Commits**: `feat:` / `fix:` / `refactor:` / `test:` / `docs:` — small and
+   focused; never "update everything".
