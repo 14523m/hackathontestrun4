@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.config import REPO_ROOT, settings
 from app.core.solar import timezone_fixed
 from app.core.types import HeatModelParameters, LatLon
+from app.engines.heat.anywhere import AnywhereHeatService
 from app.engines.heat.engine import HeatPredictionService
 from app.engines.routing.engine import MODE_WEIGHTS, RouteEngine
 from app.providers.citybrain import MockCityBrainProvider
@@ -54,6 +55,7 @@ heat_params = HeatModelParameters.from_settings(settings)
 heat_service = HeatPredictionService(spatial, weather, heat_params)
 route_engine = RouteEngine(spatial, heat_service)
 heat_map_service = HeatMapService(spatial, heat_service)
+anywhere_service = AnywhereHeatService(spatial, weather)
 planner_service = PlannerService(spatial, heat_service)
 cooling_provider = CoolingSpotProvider(spatial)
 crowd_provider = CrowdReportProvider(spatial)
@@ -222,6 +224,21 @@ def weather_current() -> Dict[str, Any]:
     }
 
 
+@app.get("/places/search", tags=["districts"])
+def places_search(
+    q: str = Query("", max_length=60),
+    limit: int = Query(8, ge=1, le=20),
+) -> List[Dict[str, Any]]:
+    """Search the HK gazetteer (MTR stations, neighbourhoods, landmarks).
+
+    SIMULATED demo accuracy; real deployment would swap in the GeoCom/CSDI
+    gazetteer through the same interface.
+    """
+    from app.providers.gazetteer import search_places
+
+    return search_places(q, limit)
+
+
 @app.get("/cooling-spots", tags=["cooling"])
 def cooling_spots(
     districtId: Optional[str] = None,
@@ -310,6 +327,56 @@ def heatmap(
     )
     layer["dataMode"] = settings.data_mode
     return layer
+
+
+@app.get("/heat/point", tags=["heatmap"])
+def heat_point(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    date: Optional[str] = None,
+    hour: Optional[float] = Query(None, ge=0, le=23.99),
+) -> Dict[str, Any]:
+    """Physics-based heat prediction at ANY coordinate in Hong Kong.
+
+    No districtId needed: building shadows + sky-view factor from the global
+    building index, land-use sampling from the nearest cell, HKO-anchored
+    weather, published thermal equations (Steadman AT, Stull wet-bulb, ABM
+    WBGT, Thorsson MRT). The click-inspect payload for the free-pan web map.
+    """
+    from app.core.geo import in_hong_kong
+
+    if not in_hong_kong(lat, lon):
+        raise HTTPException(422, "coordinate outside the Hong Kong bounding region")
+    dt = _dt_from_query(date, hour)
+    try:
+        return anywhere_service.predict_point(lat, lon, dt)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.get("/heatmap/viewport", tags=["heatmap"])
+def heatmap_viewport(
+    south: float = Query(..., ge=-90, le=90),
+    west: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    date: Optional[str] = None,
+    hour: Optional[float] = Query(None, ge=0, le=23.99),
+    maxCells: int = Query(220, ge=20, le=400),
+) -> Dict[str, Any]:
+    """Heat field for a map viewport - anywhere in Hong Kong, free pan/zoom.
+
+    Grid resolution adapts to the viewport size so every returned cell is a
+    real physics evaluation at that coordinate (max ``maxCells`` of them),
+    never interpolated decoration.
+    """
+    dt = _dt_from_query(date, hour)
+    try:
+        return anywhere_service.viewport_field(
+            south, west, north, east, dt, max_cells=maxCells
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 # --------------------------------------------------------------------------- #

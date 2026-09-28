@@ -23,7 +23,8 @@ export default function App() {
 
   let badge: { cls: string; text: string };
   if (dataMode === 'snapshot') {
-    badge = { cls: 'stale', text: 'OFFLINE SNAPSHOT · SIMULATED' };
+    badge = { cls: 'demo', text: 'OFFLINE SNAPSHOT · SIMULATED' };
+  } else if (backendMode === 'live') {
   } else if (backendMode === 'live') {
     badge = { cls: 'live', text: 'LIVE · HKO OBSERVATIONS' };
   } else if (backendMode === 'stale') {

@@ -1,20 +1,24 @@
 /**
  * HeatMapPage — the judge-facing heat map (web rebuild).
  *
- * All heat data comes from the backend's HeatPredictionService via /heatmap;
- * this component never computes or hard-codes heat values. Basemap:
- * OpenFreeMap vector tiles (coastline, roads, water, MTR context).
+ * FREE-PAN, ANYWHERE: the viewport itself is the query. Every pan/zoom asks
+ * /heatmap/viewport for the visible bounds and the backend evaluates the real
+ * physics per grid cell (shadow wedges, sky-view factor, published thermal
+ * equations). Clicking anywhere inspects that exact coordinate via
+ * /heat/point. No preset district buttons; the place search just flies the
+ * camera. All heat values come from the backend's heat services.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MapMouseEvent } from 'maplibre-gl';
 import { Map as MLMap } from 'maplibre-gl';
 
-import { api, nearestCooling } from '../../api/client';
+import { api, apiState, nearestCooling } from '../../api/client';
 import type {
   CoolingSpot,
   HeatCell,
-  HeatMapResponse,
+  HeatPointResult,
+  ViewportField,
 } from '../../api/client';
 import {
   addHeatSourcesAndLayers,
@@ -29,50 +33,25 @@ import {
 import { TimeControl, HOUR_STEPS } from './TimeControl';
 import { InspectPanel } from './InspectPanel';
 import { Legend } from './Legend';
+import { PlaceSearch } from './PlaceSearch';
+import type { GazetteerPlace } from './gazetteer';
 
-const DISTRICTS: {
-  id: string;
-  label: string;
-  description: string;
-  center: [number, number];
-  zoom: number;
-}[] = [
-  {
-    id: 'central-western',
-    label: 'Central & Western',
-    description:
-      'Dense historic district on Hong Kong Island — steep terrain, narrow streets, little park space. Simulated district for demonstration.',
-    center: [114.138, 22.285],
-    zoom: 14.6,
-  },
-  {
-    id: 'kowloon-yau-tsim',
-    label: 'Yau Tsim Mong',
-    description:
-      'Extremely dense Kowloon urban core — street canyons and tower shade. Simulated district for demonstration.',
-    center: [114.172, 22.303],
-    zoom: 14.6,
-  },
-  {
-    id: 'northern-metropolis',
-    label: 'Northern Metropolis (conceptual)',
-    description:
-      'A CONCEPTUAL / SIMULATED new-district scenario for planning-stage heat assessment. Not an official plan or prediction.',
-    center: [114.135, 22.515],
-    zoom: 13.6,
-  },
-];
+/** Centred on the harbour between Kowloon and Hong Kong Island. */
+const HOME: { center: [number, number]; zoom: number } = {
+  center: [114.169, 22.302],
+  zoom: 13.4,
+};
 
 export default function HeatMapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MLMap | null>(null);
+  const loadToken = useRef(0);
   const [mapReady, setMapReady] = useState(false);
 
-  const [districtId, setDistrictId] = useState('central-western');
   const [hour, setHour] = useState(14.5);
-  const [heat, setHeat] = useState<HeatMapResponse | null>(null);
-  const [cooling, setCooling] = useState<CoolingSpot[]>([]);
+  const [field, setField] = useState<ViewportField | null>(null);
   const [loading, setLoading] = useState(false);
+  const [offlineGap, setOfflineGap] = useState(false);
 
   const [showHeat, setShowHeat] = useState(true);
   const [heatOpacity, setHeatOpacity] = useState(0.75);
@@ -81,7 +60,9 @@ export default function HeatMapPage() {
   const [showCooling, setShowCooling] = useState(true);
 
   const [selected, setSelected] = useState<HeatCell | null>(null);
+  const [thermal, setThermal] = useState<HeatPointResult | null>(null);
   const [nearby, setNearby] = useState<CoolingSpot[]>([]);
+  const [viewCooling, setViewCooling] = useState<CoolingSpot[]>([]);
 
   // --- map lifecycle --------------------------------------------------------
   useEffect(() => {
@@ -89,52 +70,91 @@ export default function HeatMapPage() {
     const map = new MLMap({
       container: containerRef.current,
       style: BASEMAP_STYLE_URL,
-      center: DISTRICTS[0].center,
-      zoom: DISTRICTS[0].zoom,
+      center: HOME.center,
+      zoom: HOME.zoom,
       attributionControl: false,
     });
     mapRef.current = map;
     // Debug/demo hook: lets the console (and tests) inspect the live map.
     (window as unknown as { __coolpathMap?: MLMap }).__coolpathMap = map;
-    map.on('load', handler.onLoad);
+    map.on('load', () => {
+      addHeatSourcesAndLayers(map);
+      setMapReady(true);
+    });
 
     return () => {
-      map.off('load', handler.onLoad);
       map.remove();
       mapRef.current = null;
     };
   }, []);
 
-  const handler = {
-    onLoad: () => {
-      if (mapRef.current) {
-        addHeatSourcesAndLayers(mapRef.current);
-        setMapReady(true);
-      }
+  // --- data loading: the VIEWPORT is the query ------------------------------
+  const loadViewport = useCallback(
+    (map: MLMap, h: number) => {
+      const token = ++loadToken.current;
+      const b = map.getBounds();
+      setLoading(true);
+      setOfflineGap(false);
+      api
+        .viewport(
+          {
+            south: b.getSouth(),
+            west: b.getWest(),
+            north: b.getNorth(),
+            east: b.getEast(),
+          },
+          h,
+        )
+        .then((vf) => {
+          if (token !== loadToken.current || !mapRef.current) return;
+          setField(vf);
+          setHeatData(mapRef.current, cellsToFC(vf.cells));
+          setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
+          if (vf.dataMode === 'snapshot-viewport' && vf.cells.length === 0) {
+            setOfflineGap(true);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => token === loadToken.current && setLoading(false));
     },
-  };
+    [],
+  );
 
-  // --- data loading ----------------------------------------------------------
   useEffect(() => {
-    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const reload = () => loadViewport(map, hour);
+    reload();
+    map.on('moveend', reload);
+    return () => {
+      map.off('moveend', reload);
+    };
+  }, [mapReady, hour, loadViewport]);
+
+  // Cooling spots near the map centre (all districts, nearest-first).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
     let cancelled = false;
-    setLoading(true);
-    Promise.all([api.heatmap(districtId, hour, 'high'), api.coolingSpots(districtId)])
-      .then(([hm, spots]) => {
-        if (cancelled || !mapRef.current) return;
-        setHeat(hm);
-        setCooling(spots);
-        setHeatData(mapRef.current, cellsToFC(hm.cells));
-        setOverlayData(mapRef.current, SRC.cooling, spotsToFC(spots));
-        setOverlayData(mapRef.current, SRC.green, greenToFC(hm.cells));
-      })
-      .catch(() => undefined)
-      .finally(() => !cancelled && setLoading(false));
+    const refresh = () => {
+      const c = map.getCenter();
+      api
+        .coolingNear(c.lat, c.lng, 2500, 25)
+        .then((spots) => !cancelled && setViewCooling(spots))
+        .catch(() => undefined);
+    };
+    refresh();
+    map.on('moveend', refresh);
     return () => {
       cancelled = true;
+      map.off('moveend', refresh);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, districtId, hour]);
+  }, [mapReady]);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    setOverlayData(mapRef.current, SRC.cooling, spotsToFC(viewCooling));
+  }, [viewCooling]);
 
   // --- visibility / opacity sync ---------------------------------------------
   useEffect(() => {
@@ -151,12 +171,12 @@ export default function HeatMapPage() {
       setLayerVisible(map, id, showCooling);
     }
     setLayerVisible(map, LYR.buildings, showBuildings);
-  }, [mapReady, showGreen, showHeat, showCooling, showBuildings, heat]);
+  }, [mapReady, showGreen, showHeat, showCooling, showBuildings, field]);
 
-  // --- click-to-inspect (on cell outlines; surface swallows clicks) ----------
+  // --- click-to-inspect: ANY coordinate --------------------------------------
   useEffect(() => {
     const map = mapRef.current;
-    if (!mapReady || !map || !heat) return;
+    if (!mapReady || !map || !field) return;
 
     function onMapClick(e: MapMouseEvent) {
       const m = mapRef.current;
@@ -165,11 +185,16 @@ export default function HeatMapPage() {
         layers: [LYR.heatHit],
       });
       const cellId = feats[0]?.properties?.cellId as string | undefined;
-      const cell = heat?.cells.find((c) => c.cellId === cellId);
+      const cell = field?.cells.find((c) => c.cellId === cellId);
       if (cell) {
         setSelected(cell);
-        setNearby(nearestCooling(cooling, cell.center, 500, 4));
+        setNearby(nearestCooling(viewCooling, cell.center, 500, 4));
       }
+      // Full published-equation physics at the exact clicked coordinate.
+      api
+        .heatPoint(e.lngLat.lat, e.lngLat.lng, hour)
+        .then((p) => setThermal(p))
+        .catch(() => setThermal(null));
     }
 
     map.on('click', onMapClick);
@@ -177,9 +202,22 @@ export default function HeatMapPage() {
       map.off('click', onMapClick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, heat]);
+  }, [mapReady, field, viewCooling, hour]);
 
-  const activeDistrict = DISTRICTS.find((d) => d.id === districtId)!;
+  // --- place search: fly anywhere, data follows the viewport -----------------
+  function onPlacePicked(place: GazetteerPlace) {
+    setSelected(null);
+    setThermal(null);
+    mapRef.current?.flyTo({
+      center: [place.location.lon, place.location.lat],
+      zoom: 15,
+      speed: 1.2,
+    });
+  }
+
+  const mean = field && field.cells.length
+    ? field.cells.reduce((s, c) => s + c.heatScore, 0) / field.cells.length
+    : null;
 
   return (
     <div className="app-body">
@@ -243,51 +281,51 @@ export default function HeatMapPage() {
 
         <InspectPanel
           cell={selected}
+          thermal={thermal}
           nearby={nearby}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            setThermal(null);
+          }}
         />
       </div>
 
       <aside className="side-panel">
-        <div className="district-row">
-          {DISTRICTS.map((d) => (
-            <button
-              key={d.id}
-              className={d.id === districtId ? 'active' : ''}
-              onClick={() => {
-                setDistrictId(d.id);
-                setSelected(null);
-                mapRef.current?.flyTo({ center: d.center, zoom: d.zoom });
-              }}
-            >
-              {d.label}
-            </button>
-          ))}
-        </div>
+        <PlaceSearch onPick={onPlacePicked} />
+        <p className="placeholder" style={{ marginTop: 0 }}>
+          Pan or zoom anywhere in Hong Kong — the heat field regenerates for
+          the view. Click any spot for the physics behind it.
+        </p>
 
-        <h2>{activeDistrict.label}</h2>
-        {heat && (
+        {offlineGap && (
+          <p className="placeholder" style={{ color: '#ffb86c' }}>
+            Offline snapshot has no embedded data for this view — start the API
+            (uvicorn on :8000) or return to Central &amp; Western, Yau Tsim
+            Mong or the conceptual Northern Metropolis.
+          </p>
+        )}
+
+        {mean !== null && (
+          <div className="score-pill" style={{ marginBottom: 12 }}>
+            <span className="num">{Math.round(mean)}</span>
+            <span className="cap">
+              mean over this view at {fmtHour(hour)}
+              <br />
+              {field?.cells.filter((c) => c.heatScore >= 65).length ?? 0} hot
+              cells (≥65) · {field?.cells.length ?? 0} evaluated
+            </span>
+          </div>
+        )}
+
+        {field && (
           <>
-            <div className="score-pill" style={{ marginBottom: 12 }}>
-              <span className="num">{Math.round(meanOf(heat.cells))}</span>
-              <span className="cap">
-                district mean at {fmtHour(hour)}
-                <br />
-                {heat.cells.filter((c) => c.heatScore >= 65).length} hot cells (≥65)
-              </span>
-            </div>
-            <p className="placeholder">{activeDistrict.description}</p>
-
-            <h3>Cooling spots here</h3>
-            {cooling.slice(0, 6).map((s) => (
-              <div className="cooling-item" key={s.id}>
-                <span>{s.name}</span>
-                <span className="dist">{s.type.replace(/_/g, ' ')}</span>
-              </div>
-            ))}
-
             <h3>About this layer</h3>
-            <p className="placeholder">{heat.provenance.notes}</p>
+            <p className="placeholder">{field.provenance.notes}</p>
+            {field.cells[0] && (
+              <p className="placeholder">
+                Sources: {field.cells[0].sources.join(' · ')}
+              </p>
+            )}
           </>
         )}
       </aside>
@@ -350,11 +388,6 @@ function greenToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
         },
       })),
   };
-}
-
-function meanOf(cells: HeatCell[]): number {
-  if (!cells.length) return 0;
-  return cells.reduce((s, c) => s + c.heatScore, 0) / cells.length;
 }
 
 function fmtHour(h: number): string {

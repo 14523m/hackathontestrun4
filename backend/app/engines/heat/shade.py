@@ -1,10 +1,14 @@
-"""Shade estimation from solar geometry and building envelopes.
+"""Shade and sky-view estimation from solar geometry and building envelopes.
 
-For a pedestrian point and time, decide whether direct sun reaches it.
-Model: a building of height h with circumradius r shades ground points that
+Shade: a building of height h with circumradius r shades ground points that
 are (a) on the anti-solar side of the building and (b) within
-r + h/tan(elevation) of the building axis - i.e. the classic wall-shadow
-wedge. Points beside the building on the sun side stay sunlit.
+r + h/tan(elevation) of the building axis - the classic wall-shadow wedge.
+
+Sky-view factor: hemispherical obstruction by surrounding buildings via the
+ring-meridian method (Sterk et al. 2013, adapted from Steyn 1980):
+K concentric rings x 8 meridians; each ring's blocking angle is computed
+from the tallest building intersecting that ring on each meridian;
+SVF = 1 - mean over meridians of the cosine-weighted obstruction.
 
 Prototype geometric model - not a validated irradiance simulator.
 """
@@ -21,9 +25,13 @@ from app.core.types import SunPosition
 MAX_SHADOW_M = 180.0  # cap for very tall towers at low sun
 M_PER_DEG_LAT = 111_320.0
 
+SVF_RADIUS_M = 100.0  # search radius for horizon obstruction
+SVF_RINGS = 10  # concentric rings (Steyn 1980 / Sterk 2013)
+SVF_MERIDIANS = 8  # azimuthal directions
+
 
 class ShadeModel:
-    """Answers: how shaded is a point at a given time, given buildings?"""
+    """Answers: how shaded is a point at a given time, and how open is the sky?"""
 
     def __init__(self, buildings: List[dict]) -> None:
         # Precompute (centre_lat, centre_lon, circumradius_m, height_m).
@@ -56,7 +64,6 @@ class ShadeModel:
             return 0.0, sun
 
         m_per_deg_lon = M_PER_DEG_LAT * math.cos(math.radians(lat))
-        de = (lon - 0.0)  # placeholder to keep names clear; computed per building
         best = 0.0
         for clat, clon, radius, height in self._buildings:
             de = (lon - clon) * m_per_deg_lon
@@ -79,3 +86,48 @@ class ShadeModel:
             shade = 0.55 + 0.40 * falloff
             best = max(best, min(1.0, shade))
         return best, sun
+
+    # -- sky-view factor ----------------------------------------------------- #
+
+    def svf_at(self, lat: float, lon: float,
+               radius_m: float = SVF_RADIUS_M) -> float:
+        """Sky-view factor 0..1 at a point (Steyn 1980 ring method).
+
+        For each of 8 meridians, walks K concentric rings of increasing
+        radius; the blocking elevation angle of ring k is the max over
+        buildings intersecting that ring of atan(h / r_k). Sky obstruction
+        per meridian: obstr = sum_k (1 - cos(gamma_k)) / K; the SVF is
+        1 minus the mean obstruction (cosine-weighted sky patch share).
+        """
+        if not self._buildings:
+            return 1.0
+        m_per_deg_lon = M_PER_DEG_LAT * math.cos(math.radians(lat))
+        obstruction_total = 0.0
+
+        for m in range(SVF_MERIDIANS):
+            az = 2.0 * math.pi * m / SVF_MERIDIANS
+            dir_e, dir_n = math.sin(az), math.cos(az)
+            per_meridian = 0.0
+            for k in range(1, SVF_RINGS + 1):
+                r_k = radius_m * k / SVF_RINGS
+                gamma_max = 0.0
+                for clat, clon, b_radius, height in self._buildings:
+                    de = (lon - clon) * m_per_deg_lon
+                    dn = (lat - clat) * M_PER_DEG_LAT
+                    along = de * dir_e + dn * dir_n  # projection on meridian
+                    if along <= 0.0:
+                        continue
+                    # Distance of the building centre from the meridian ray.
+                    perp = abs(de * dir_n - dn * dir_e)
+                    edge_dist = max(along - b_radius, 0.0)
+                    if edge_dist > r_k or perp > b_radius:
+                        continue
+                    eff_r = max(edge_dist, 1.0)
+                    gamma = math.atan2(height, eff_r)
+                    if gamma > gamma_max:
+                        gamma_max = gamma
+                per_meridian += 1.0 - math.cos(gamma_max)
+            obstruction_total += per_meridian / SVF_RINGS
+
+        svf = 1.0 - obstruction_total / SVF_MERIDIANS
+        return min(max(svf, 0.05), 1.0)

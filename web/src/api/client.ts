@@ -129,6 +129,130 @@ function nearestSnapshotHour(hour: number): number {
   );
 }
 
+export interface HeatPointResult {
+  heatScore: number;
+  temperatureC: number;
+  apparentTemperatureShadeC: number;
+  apparentTemperatureSunC: number;
+  wetBulbC: number;
+  wbgtShadeC: number;
+  meanRadiantTempC: number;
+  skyViewFactor: number;
+  shadeScore: number;
+  vegetationScore: number;
+  buildingDensity: number;
+  windScore: number;
+  isDaytime: boolean;
+  districtId: string | null;
+  factors: FactorContribution[];
+  confidence: number;
+  isModelled: boolean;
+  sources: string[];
+  offlineApproximate?: boolean;
+}
+
+export interface ViewportField {
+  generatedAt: string;
+  validFor: string;
+  dataMode: string;
+  isStale: boolean;
+  bounds: { south: number; west: number; north: number; east: number };
+  cols: number;
+  rows: number;
+  cells: HeatCell[];
+  legend: Record<string, string>;
+  provenance: Provenance;
+}
+
+interface ViewportBounds {
+  south: number;
+  west: number;
+  north: number;
+  east: number;
+}
+
+/** Districts whose snapshots are embedded for the offline demo. */
+const EMBEDDED_DISTRICTS = ['central-western', 'kowloon-yau-tsim', 'northern-metropolis'];
+
+function snapshotCells(districtId: string, hour: number): HeatCell[] {
+  const hit = SNAPSHOTS[`${districtId}|${nearestSnapshotHour(hour)}`] as
+    | { cells: HeatCell[] }
+    | undefined;
+  return hit?.cells ?? [];
+}
+
+/** Offline viewport: intersect embedded flagship districts with the bounds. */
+function viewportFromSnapshots(b: ViewportBounds, hour: number): ViewportField {
+  const cells: HeatCell[] = [];
+  for (const d of EMBEDDED_DISTRICTS) {
+    for (const c of snapshotCells(d, hour)) {
+      if (
+        c.center.lat >= b.south && c.center.lat <= b.north &&
+        c.center.lon >= b.west && c.center.lon <= b.east
+      ) {
+        cells.push(c);
+      }
+    }
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    validFor: new Date().toISOString(),
+    dataMode: 'snapshot-viewport',
+    isStale: false,
+    bounds: b,
+    cols: 0,
+    rows: 0,
+    cells,
+    legend: {},
+    provenance: {
+      sources: ['embedded offline snapshot'],
+      observed: false,
+      modelled: true,
+      confidence: 0.5,
+      notes: cells.length
+        ? 'OFFLINE SNAPSHOT: embedded flagship-district cells inside this view.'
+        : 'OFFLINE SNAPSHOT: no embedded data for this area (needs the live API).',
+    },
+  };
+}
+
+/** Offline point: nearest embedded cell within ~2 km, else fail honestly. */
+function pointFromSnapshots(lat: number, lon: number, hour: number): HeatPointResult {
+  let best: HeatCell | null = null;
+  let bestD = Infinity;
+  for (const d of EMBEDDED_DISTRICTS) {
+    for (const c of snapshotCells(d, hour)) {
+      const dist = haversineM({ lat, lon }, c.center);
+      if (dist < bestD) {
+        best = c;
+        bestD = dist;
+      }
+    }
+  }
+  if (!best || bestD > 2000) throw new Error('no offline data near this point');
+  return {
+    heatScore: best.heatScore,
+    temperatureC: 0,
+    apparentTemperatureShadeC: 0,
+    apparentTemperatureSunC: 0,
+    wetBulbC: 0,
+    wbgtShadeC: 0,
+    meanRadiantTempC: 0,
+    skyViewFactor: 0,
+    shadeScore: best.shadeScore,
+    vegetationScore: best.vegetationScore,
+    buildingDensity: best.buildingDensity,
+    windScore: best.windScore,
+    isDaytime: true,
+    districtId: null,
+    factors: best.factors,
+    confidence: best.confidence,
+    isModelled: true,
+    sources: best.sources,
+    offlineApproximate: true,
+  };
+}
+
 export const api = {
   heatmap: (districtId: string, hour: number, detail: 'standard' | 'high' = 'high') =>
     withFallback<HeatMapResponse>(
@@ -143,6 +267,32 @@ export const api = {
     withFallback<CoolingSpot[]>(
       () => getJson(`${BASE}/cooling-spots?districtId=${districtId}`),
       async () => snapshotJson(`${districtId}|cooling`),
+    ),
+
+  heatPoint: (lat: number, lon: number, hour: number) =>
+    withFallback<HeatPointResult>(
+      () =>
+        getJson(
+          `${BASE}/heat/point?lat=${lat}&lon=${lon}&hour=${hour}`,
+        ),
+      async () => pointFromSnapshots(lat, lon, hour),
+    ),
+
+  viewport: (b: ViewportBounds, hour: number, maxCells = 220) =>
+    withFallback<ViewportField>(
+      () =>
+        getJson(
+          `${BASE}/heatmap/viewport?south=${b.south}&west=${b.west}` +
+            `&north=${b.north}&east=${b.east}&hour=${hour}&maxCells=${maxCells}`,
+        ),
+      async () => viewportFromSnapshots(b, hour),
+    ),
+
+  /** Nearest cooling spots to a coordinate (live backend supports this). */
+  coolingNear: (lat: number, lon: number, maxM = 500, limit = 4) =>
+    getJson<CoolingSpot[]>(
+      `${BASE}/cooling-spots?lat=${lat}&lon=${lon}` +
+        `&maxDistanceMeters=${maxM}&limit=${limit}`,
     ),
 
   dataSources: () =>
