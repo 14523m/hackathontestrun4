@@ -97,6 +97,10 @@ interface CoolPathMapProps {
   showNetwork?: boolean;
   showCoolingSpots?: boolean;
   onPressCell?: (feature: { properties?: { cellId?: string } } | null) => void;
+  onPressCoolingSpot?: (
+    feature: { properties?: { name?: string; type?: string; openingHours?: string } } | null,
+  ) => void;
+  heatOpacity?: number;
 }
 
 export default function CoolPathMap({
@@ -110,6 +114,8 @@ export default function CoolPathMap({
   showNetwork = true,
   showCoolingSpots = true,
   onPressCell,
+  onPressCoolingSpot,
+  heatOpacity = 0.45,
 }: CoolPathMapProps) {
   const heatFC = useMemo(
     () => (heatCells ? heatFeatureCollection(heatCells) : null),
@@ -149,14 +155,14 @@ export default function CoolPathMap({
             id="landuse-green"
             source="landuse"
             filter={greenFilter}
-            paint={{ 'fill-color': '#1a9641', 'fill-opacity': 0.5 }}
+            paint={{ 'fill-color': '#1d5e33', 'fill-opacity': 0.85 }}
           />
           <Layer
             type="fill"
             id="landuse-open"
             source="landuse"
             filter={openFilter}
-            paint={{ 'fill-color': '#a6d96a', 'fill-opacity': 0.3 }}
+            paint={{ 'fill-color': '#3f7a3a', 'fill-opacity': 0.6 }}
           />
         </GeoJSONSource>
       )}
@@ -167,7 +173,13 @@ export default function CoolPathMap({
             type="fill"
             id="buildings-fill"
             source="buildings"
-            paint={{ 'fill-color': '#3d4a5c', 'fill-opacity': 0.85 }}
+            paint={{ 'fill-color': '#232f3e', 'fill-opacity': 0.95 }}
+          />
+          <Layer
+            type="line"
+            id="buildings-outline"
+            source="buildings"
+            paint={{ 'line-color': '#3b4d63', 'line-width': 1 }}
           />
         </GeoJSONSource>
       )}
@@ -192,7 +204,7 @@ export default function CoolPathMap({
             filter={heatFilter}
             paint={{
               'fill-color': HEAT_RAMP as never,
-              'fill-opacity': 0.45,
+              'fill-opacity': heatOpacity,
             }}
           />
         </GeoJSONSource>
@@ -200,14 +212,38 @@ export default function CoolPathMap({
 
       {mapData && showNetwork && (
         <GeoJSONSource id="network" data={mapData.network}>
+          {/* Casing then fill = real map look. Width by street class. */}
+          <Layer
+            type="line"
+            id="network-casing"
+            source="network"
+            paint={{
+              'line-color': '#0a0f16',
+              'line-width': [
+                'interpolate', ['linear'], ['get', 'kind'],
+                'avenue', 7,
+                'street', 4.5,
+                'lane', 4,
+              ] as never,
+            }}
+          />
           <Layer
             type="line"
             id="network-lines"
             source="network"
             paint={{
-              'line-color': '#8fa3b8',
-              'line-width': 1.5,
-              'line-opacity': 0.6,
+              'line-color': [
+                'match', ['get', 'kind'],
+                'lane', '#4a8c5c',
+                'avenue', '#5b708a',
+                '#44566c',
+              ] as never,
+              'line-width': [
+                'interpolate', ['linear'], ['get', 'kind'],
+                'avenue', 5,
+                'street', 3,
+                'lane', 2.5,
+              ] as never,
             }}
           />
         </GeoJSONSource>
@@ -240,13 +276,35 @@ export default function CoolPathMap({
       )}
 
       {mapData && showCoolingSpots && (
-        <GeoJSONSource id="cooling" data={mapData.coolingSpots}>
+        <GeoJSONSource
+          id="cooling"
+          data={mapData.coolingSpots}
+          onPress={
+            onPressCoolingSpot
+              ? (f) =>
+                  onPressCoolingSpot(
+                    (f as { properties?: { name?: string; type?: string; openingHours?: string } } | null) ??
+                      null,
+                  )
+              : undefined
+          }
+        >
+          <Layer
+            type="circle"
+            id="cooling-halo"
+            source="cooling"
+            paint={{
+              'circle-radius': 11,
+              'circle-color': '#4dd0e1',
+              'circle-opacity': 0.25,
+            }}
+          />
           <Layer
             type="circle"
             id="cooling-dots"
             source="cooling"
             paint={{
-              'circle-radius': 6,
+              'circle-radius': 5.5,
               'circle-color': '#4dd0e1',
               'circle-stroke-color': '#ffffff',
               'circle-stroke-width': 2,
