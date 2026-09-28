@@ -11,8 +11,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
+from app.config import REPO_ROOT, settings
 from app.core.solar import timezone_fixed
 from app.core.types import HeatModelParameters, LatLon
 from app.engines.heat.engine import HeatPredictionService
@@ -227,10 +228,17 @@ def cooling_spots(
     lat: Optional[float] = None,
     lon: Optional[float] = None,
     limit: int = 5,
+    maxDistanceMeters: Optional[float] = Query(None, gt=0),
 ) -> List[Dict[str, Any]]:
+    """Cooling spots; with lat/lon returns nearest-first, optionally bounded
+    by ``maxDistanceMeters`` (used by the web inspect panel's 500 m search)."""
     if lat is not None and lon is not None:
-        return cooling_provider.nearest(lat, lon, limit=limit,
-                                        district_id=districtId)
+        spots = cooling_provider.nearest(lat, lon, limit=limit,
+                                         district_id=districtId)
+        if maxDistanceMeters is not None:
+            spots = [s for s in spots
+                     if s["distanceMeters"] <= maxDistanceMeters]
+        return spots
     return cooling_provider.list(districtId)
 
 
@@ -278,8 +286,13 @@ def heatmap(
     districtId: str = Query("central-western"),
     date: Optional[str] = None,
     hour: Optional[float] = Query(None, ge=0, le=23.99),
+    detail: str = Query("standard", pattern="^(standard|high)$"),
 ) -> Dict[str, Any]:
-    """Time-dependent heat layer. Pass ?hour=9/12/15/18 to see it change."""
+    """Time-dependent heat layer.
+
+    ``detail=high`` subdivides each land-use cell 2x2 (same heat model per
+    sub-cell) for a smoother surface on the web heatmap.
+    """
     dt = _dt_from_query(date, hour)
     if dt.hour < 5 or dt.hour >= 22:
         return {
@@ -292,7 +305,9 @@ def heatmap(
             "legend": {},
             "note": "Night hours: solar exposure model inactive (demo scope).",
         }
-    layer = heat_map_service.build(districtId, dt)
+    layer = heat_map_service.build(
+        districtId, dt, subdivisions=2 if detail == "high" else 1
+    )
     layer["dataMode"] = settings.data_mode
     return layer
 
@@ -439,6 +454,16 @@ def equity(districtId: str = Query("central-western"),
             "vulnerability data, used only where legally/ethically appropriate."
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Web UI (judge-facing): when web/dist exists (npm run build in web/), serve
+# the built SPA from this same origin - ONE server for API + UI on :8000.
+# API routes above are registered first, so they take precedence.
+# --------------------------------------------------------------------------- #
+_WEB_DIST = REPO_ROOT / "web" / "dist"
+if _WEB_DIST.exists():
+    app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 
 
 if __name__ == "__main__":  # pragma: no cover

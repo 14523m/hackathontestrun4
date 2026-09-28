@@ -11,8 +11,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parent
-REPO_ROOT = BACKEND_ROOT.parent
+BACKEND_ROOT = Path(__file__).resolve().parent  # backend/app
+REPO_ROOT = BACKEND_ROOT.parent.parent  # repo root (contains web/, mobile/)
 
 
 def _env(name: str, default: str) -> str:
