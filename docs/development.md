@@ -33,12 +33,16 @@ hk-coolpath/
 ### Backend
 
 ```bash
-cd backend
+cd backend && ./setup.sh          # Windows: setup.bat
+# or manually:
 python3 -m venv .venv
 ./.venv/bin/pip install -e ".[dev]"
 ./.venv/bin/python -m app.data.generate_static_data   # regenerate mock geodata
 ./.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
+
+> Virtualenvs are machine-specific: never copy `.venv/` between computers
+> (it holds absolute paths/symlinks). Always recreate with the setup script.
 
 - API docs: http://localhost:8000/docs
 - `DATA_MODE=demo` (default) is fully offline; `DATA_MODE=live` uses HKO Open Data.
@@ -52,10 +56,15 @@ npx expo start
 ```
 
 - MapLibre needs a **dev build** (not Expo Go): `npx expo run:ios` /
-  `npx expo run:android` (or `eas build --profile development`).
+  `npx expo run:android` (or `eas build --profile development`). The
+  `xcrun simctl openurl … timed out` error means the dev client isn't
+  installed on that simulator yet — run `expo run:ios` first.
 - The app expects the backend on `http://localhost:8000` (iOS simulator).
   For a physical device, set `EXPO_PUBLIC_API_URL=http://<your-LAN-IP>:8000`
-  in `mobile/.env`.
+  in `mobile/.env` **and** bind the backend to the network with
+  `--host 0.0.0.0`; check `http://<LAN-IP>:8000/health` from the phone's
+  browser. Campus Wi-Fi with client isolation blocks this — use a personal
+  hotspot if the health check fails.
 
 ### Docker (backend only)
 

@@ -22,12 +22,24 @@ live HKO weather is one environment variable away.
 
 ### 1. Backend (FastAPI)
 
+macOS / Linux:
+
 ```bash
-cd backend
-python3 -m venv .venv
-./.venv/bin/pip install -e ".[dev]"
+cd backend && ./setup.sh
 ./.venv/bin/uvicorn app.main:app --port 8000
 ```
+
+Windows:
+
+```bat
+cd backend && setup.bat
+.venv\Scripts\uvicorn app.main:app --port 8000
+```
+
+> ⚠️ **Never copy `.venv/` between machines** (AirDrop, zip, USB): it contains
+> hardcoded absolute paths and symlinks that only work on the machine that
+> created it — this is the usual cause of "python3 can't be found". Share the
+> repo via git and run the setup script; it always builds a fresh venv.
 
 Open http://localhost:8000/docs for the interactive API.
 
@@ -40,7 +52,16 @@ npx expo run:ios        # or: npx expo run:android  (dev build; MapLibre needs n
 ```
 
 The app connects to `http://localhost:8000` (iOS simulator). For a physical
-device put `EXPO_PUBLIC_API_URL=http://<LAN-IP>:8000` in `mobile/.env`.
+device put `EXPO_PUBLIC_API_URL=http://<LAN-IP>:8000` in `mobile/.env` and
+start the backend exposed to the network:
+
+```bash
+./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Verify from the phone's browser at `http://<LAN-IP>:8000/health` — campus
+Wi-Fi that blocks device-to-device traffic (client isolation) will fail here;
+use a personal-hotspot connection instead.
 
 ### 3. Docker (backend only)
 
@@ -111,7 +132,7 @@ Commit style: `feat: add cool route scoring`, `fix: correct shadow direction`,
 ## Tests
 
 ```bash
-cd backend && ./.venv/bin/python -m pytest   # 40 tests: solar/shade, heat model, routing, providers, API
+cd backend && ./setup.sh && ./.venv/bin/python -m pytest   # 40 tests
 cd mobile  && npx tsc --noEmit               # strict typecheck
 ```
 
