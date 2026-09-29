@@ -10,7 +10,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { MapMouseEvent } from 'maplibre-gl';
+import type { MapMouseEvent, StyleSpecification } from 'maplibre-gl';
 import { Map as MLMap } from 'maplibre-gl';
 
 import { api, nearestCooling } from '../../api/client';
@@ -26,6 +26,8 @@ import {
   LYR,
   setHeatData,
   setHeatOpacity as applyMapHeatOpacity,
+  setHeatPoints,
+  setHeatRadiusForSpacing,
   setLayerVisible,
   setOverlayData,
   SRC,
@@ -50,6 +52,16 @@ const HK_BOUNDS: [[number, number], [number, number]] = [
   [113.75, 21.9],
   [114.5, 22.65],
 ];
+
+/** Minimal style used only when the CDN basemap stalls (venue wifi): keeps
+ *  the heat layer, cooling spots and interactions fully functional. */
+const BARE_STYLE: StyleSpecification = {
+  version: 8,
+  sources: {},
+  layers: [
+    { id: 'bg', type: 'background', paint: { 'background-color': '#0d1117' } },
+  ],
+};
 
 export default function HeatMapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -87,7 +99,20 @@ export default function HeatMapPage() {
     mapRef.current = map;
     // Debug/demo hook: lets the console (and tests) inspect the live map.
     (window as unknown as { __coolpathMap?: MLMap }).__coolpathMap = map;
+    // Venue-wifi insurance: if the CDN basemap stalls, don't lose the heat
+    // field — swap to a minimal offline style after 8 s so the physics layer
+    // still renders (basemap is cosmetic; the heat data is the product).
+    const fallbackTimer = window.setTimeout(() => {
+      if (!map.style || !map.isStyleLoaded()) {
+        try {
+          map.setStyle(BARE_STYLE, { diff: false });
+        } catch {
+          /* map already removed on unmount */
+        }
+      }
+    }, 8000);
     map.on('load', () => {
+      window.clearTimeout(fallbackTimer);
       addHeatSourcesAndLayers(map);
       setMapReady(true);
     });
@@ -119,6 +144,19 @@ export default function HeatMapPage() {
           if (token !== loadToken.current || !mapRef.current) return;
           setField(vf);
           setHeatData(mapRef.current, cellsToFC(vf.cells));
+          // Continuous surface: bilinear densification of the physics grid
+          // + kernel radius tracking (3x point spacing at the current zoom).
+          setHeatPoints(mapRef.current, densifyPoints(vf.cells));
+          const dLon = vf.cols > 1 ? (vf.bounds.east - vf.bounds.west) / vf.cols : 0;
+          if (dLon > 0) {
+            const latMid = (vf.bounds.south + vf.bounds.north) / 2;
+            const p1 = mapRef.current.project([vf.bounds.west, latMid]);
+            const p2 = mapRef.current.project([vf.bounds.west + dLon, latMid]);
+            setHeatRadiusForSpacing(
+              mapRef.current,
+              Math.hypot(p2.x - p1.x, p2.y - p1.y),
+            );
+          }
           setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
           // Any mode producing zero cells here means the view has no data.
           if (vf.cells.length === 0) {
@@ -379,6 +417,59 @@ function cellsToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
       },
     })),
   };
+}
+
+/**
+ * Densify the physics grid into a CONTINUOUS point field for the heatmap
+ * renderer. Every input is a real per-cell physics evaluation; bilinear
+ * interpolation only fills BETWEEN cell centres (quad interior points at
+ * half-cell spacing) so the render kernels merge into ONE surface instead
+ * of separate blobs — heat-score fields are smooth over a cell, and shade/
+ * SVF vary over tens of metres while quads are at most a couple hundred.
+ * Points carry the interpolated score as 'heatScore' for the kernel weight.
+ */
+function densifyPoints(cells: HeatCell[]): GeoJSON.FeatureCollection {
+  const groups = new Map<string, { i: number; j: number; c: HeatCell }[]>();
+  for (const c of cells) {
+    const m = /^(?:eng|vp)-(\d+)-(\d+)$/.exec(c.cellId);
+    if (!m) continue;
+    const key = `${m[1]}/${m[2]}`;
+    const arr = groups.get(key);
+    if (arr) arr.push({ i: Number(m[1]), j: Number(m[2]), c });
+    else groups.set(key, [{ i: Number(m[1]), j: Number(m[2]), c }]);
+  }
+
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const features: GeoJSON.Feature[] = [];
+  const push = (lat: number, lon: number, score: number) => {
+    features.push({
+      type: 'Feature',
+      properties: { heatScore: Math.round(score * 10) / 10 },
+      geometry: { type: 'Point', coordinates: [lon, lat] },
+    });
+  };
+
+  for (const quad of groups.values()) {
+    if (quad.length !== 4) {
+      // Incomplete quad at the view edge: fall back to the cell centres.
+      for (const { c } of quad) push(c.center.lat, c.center.lon, c.heatScore);
+      continue;
+    }
+    // Numeric (i, j) order: a=TL, b=TR, c2=BL, d=BR.
+    const [a, b, c2, d] = [...quad].sort(
+      (p, q) => p.i - q.i || p.j - q.j,
+    ).map((q) => q.c);
+    const score = (s: number, t: number) =>
+      lerp(lerp(a.heatScore, b.heatScore, s), lerp(c2.heatScore, d.heatScore, s), t);
+    const lat = (s: number, t: number) =>
+      lerp(lerp(a.center.lat, b.center.lat, s), lerp(c2.center.lat, d.center.lat, s), t);
+    const lon = (s: number, t: number) =>
+      lerp(lerp(a.center.lon, b.center.lon, s), lerp(c2.center.lon, d.center.lon, s), t);
+    for (const [s, t] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      push(lat(s, t), lon(s, t), score(s, t));
+    }
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 function spotsToFC(spots: CoolingSpot[]): GeoJSON.FeatureCollection {

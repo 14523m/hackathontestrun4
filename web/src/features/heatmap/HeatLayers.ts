@@ -18,6 +18,7 @@ function turboExpressionDensity(densityExpr: unknown): unknown[] {
 
 export const SRC = {
   heat: 'heat-src',
+  heatPts: 'heat-pts-src',
   green: 'green-src',
   buildings: 'buildings-src',
   cooling: 'cooling-src',
@@ -71,6 +72,7 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
 
   const sources: Record<string, SourceSpecification> = {
     [SRC.heat]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
+    [SRC.heatPts]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
     [SRC.green]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
     [SRC.buildings]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
     [SRC.cooling]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
@@ -90,26 +92,28 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
       paint: { 'fill-color': '#8f9aa8', 'fill-opacity': 0.35 },
     },
     {
-      // The continuous, kernel-smoothed heat surface. Points are densified
-      // 2x2 per land-use cell (~75 m) so kernels MERGE into one field.
-      // NOTE: heatmap-density runs 0..1 — turbo stops must be fractional.
-      // Weights are scaled for the 4x denser grid so density values map
-      // scores truthfully instead of saturating.
+      // The continuous heat surface. The physics grid is deliberately coarse
+      // (real per-cell evaluations); the page densifies it bilinearly into an
+      // evenly spaced point field so the kernels MERGE into ONE field —
+      // never separate blobs. Calibration: with kernel radius = 3× point
+      // spacing, a plateau of score S integrates to density ≈ S/100, so the
+      // turbo ramp reads the true score (weight = score/942, intensity 1).
+      // heatmap-density runs 0..1 — turbo stops must be fractional.
       id: LYR.heatSurface,
       type: 'heatmap',
-      source: SRC.heat,
+      source: SRC.heatPts,
       paint: {
         'heatmap-weight': [
-          'interpolate', ['linear'], ['get', 'heatScore'], 0, 0.03, 100, 0.3,
+          'interpolate', ['linear'], ['get', 'heatScore'], 0, 0.0, 100, 0.106,
         ] as never,
         'heatmap-intensity': 1.0,
-        'heatmap-radius': 52,
+        'heatmap-radius': 26,
         'heatmap-color': turboExpressionDensity(['heatmap-density']) as never,
         'heatmap-opacity': 0.75,
       },
     },
     {
-      // Invisible fill on the same source: reliable click target
+      // Invisible cell polygons on the physics grid: reliable click target
       // (heatmap layers cannot be queryRenderedFeatures'd).
       id: LYR.heatHit,
       type: 'fill',
@@ -211,6 +215,21 @@ export function setHeatOpacity(map: maplibregl.Map, opacity: number): void {
   if (map.getLayer(LYR.heatSurface)) {
     map.setPaintProperty(LYR.heatSurface, 'heatmap-opacity', opacity);
   }
+}
+
+/**
+ * Track the zoom: keep the kernel radius at 3x the current on-screen point
+ * spacing so the surface stays one continuous field at every zoom level -
+ * call after every viewport reload. Radius is in screen pixels.
+ */
+export function setHeatRadiusForSpacing(map: maplibregl.Map, spacingPx: number): void {
+  if (map.getLayer(LYR.heatSurface)) {
+    map.setPaintProperty(LYR.heatSurface, 'heatmap-radius', Math.max(12, 3 * spacingPx));
+  }
+}
+
+export function setHeatPoints(map: maplibregl.Map, fc: GeoJSON.FeatureCollection): void {
+  (map.getSource(SRC.heatPts) as unknown as GeoJSONSourceLike | null)?.setData(fc);
 }
 
 export function setHeatRadius(map: maplibregl.Map, radius: number): void {
