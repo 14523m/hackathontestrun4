@@ -160,6 +160,7 @@ export default function HeatMapPage() {
           setField(vf);
           setHeatData(mapRef.current, cellsToFC(vf.cells));
           setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
+          setOverlayData(mapRef.current, SRC.buildings, tallBuildingsToFC(vf.cells));
         })
         .catch(() => undefined)
         .finally(() => token === loadToken.current && setLoading(false));
@@ -687,6 +688,25 @@ function greenToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
       .map((c) => ({
         type: 'Feature' as const,
         id: `g-${c.cellId}`,
+        properties: {},
+        geometry: {
+          type: 'Polygon' as const,
+          coordinates: [[...c.polygon, c.polygon[0]]],
+        },
+      })),
+  };
+}
+
+/** Cells hemmed in by tall buildings — the streets where heat lingers
+ *  after sunset. Same data the heat score uses, shown on its own layer. */
+function tallBuildingsToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
+  return {
+    type: 'FeatureCollection',
+    features: cells
+      .filter((c) => c.buildingDensity >= 0.5)
+      .map((c) => ({
+        type: 'Feature' as const,
+        id: `b-${c.cellId}`,
         properties: {},
         geometry: {
           type: 'Polygon' as const,
