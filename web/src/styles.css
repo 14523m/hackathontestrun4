@@ -448,3 +448,107 @@ body,
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* --- route planner UI ------------------------------------------------- */
+
+.route-banner {
+  position: absolute;
+  top: 74px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  background: #132c3f;
+  color: #e6f6ff;
+  border: 1px solid #22d3ee;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.route-banner button {
+  background: transparent;
+  border: none;
+  color: #7dd3fc;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.route-card {
+  position: absolute;
+  bottom: 16px;
+  left: 12px;
+  z-index: 40;
+  width: 292px;
+  background: rgba(13, 17, 23, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.route-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.route-balance {
+  margin: 4px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.route-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.route-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.route-row.dim {
+  color: var(--text-dim);
+}
+
+.route-verdict {
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: rgba(34, 211, 238, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 0 0 6px;
+}
+
+.route-verdict.good {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.route-fineprint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.howto {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}

@@ -3,33 +3,31 @@
  * The map component stays declarative; this module is the single place that
  * knows about layer ids, so other features never touch them.
  *
- * Data always arrives from the API (HeatPredictionService output) — nothing
- * about heat values is decided here.
+ * Data always arrives from the API/heat engine — nothing about heat values
+ * is decided here.
  */
 
 import type { LayerSpecification, SourceSpecification } from 'maplibre-gl';
-import { TURBO_STOPS } from './colors';
-
-/** MapLibre heatmap-color over density 0..1 using the turbo ramp. */
-function turboExpressionDensity(densityExpr: unknown): unknown[] {
-  const flat = TURBO_STOPS.flatMap(([v, c]) => [v / 100, c]);
-  return ['interpolate', ['linear'], densityExpr, ...flat];
-}
+import { turboExpression } from './colors';
 
 export const SRC = {
   heat: 'heat-src',
-  heatPts: 'heat-pts-src',
   green: 'green-src',
   buildings: 'buildings-src',
   cooling: 'cooling-src',
+  route: 'route-src',
+  routeFast: 'route-fast-src',
+  routePts: 'route-pts-src',
 } as const;
 
 export const LYR = {
   heatSurface: 'heat-surface',
-  heatCells: 'heat-cell-outlines',
   heatHit: 'heat-hit',
   green: 'green-fill',
   buildings: 'buildings-fill',
+  routeFast: 'route-fast-line',
+  routeLine: 'route-line',
+  routeDots: 'route-dots',
   coolingHalo: 'cooling-halo',
   coolingDots: 'cooling-dots',
   coolingIcons: 'cooling-icons',
@@ -67,15 +65,22 @@ function addCoolingIcons(map: maplibregl.Map): void {
   iconsAdded = true;
 }
 
+const EMPTY_FC = {
+  type: 'FeatureCollection',
+  features: [],
+} as never as GeoJSON.FeatureCollection;
+
 export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
   addCoolingIcons(map);
 
   const sources: Record<string, SourceSpecification> = {
-    [SRC.heat]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
-    [SRC.heatPts]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
-    [SRC.green]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
-    [SRC.buildings]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
-    [SRC.cooling]: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } as never },
+    [SRC.heat]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.green]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.buildings]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.cooling]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.route]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.routeFast]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.routePts]: { type: 'geojson', data: EMPTY_FC },
   };
 
   const layers: LayerSpecification[] = [
@@ -92,33 +97,61 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
       paint: { 'fill-color': '#8f9aa8', 'fill-opacity': 0.35 },
     },
     {
-      // The continuous heat surface. The physics grid is deliberately coarse
-      // (real per-cell evaluations); the page densifies it bilinearly into an
-      // evenly spaced point field so the kernels MERGE into ONE field —
-      // never separate blobs. Calibration: with kernel radius = 3× point
-      // spacing, a plateau of score S integrates to density ≈ S/100, so the
-      // turbo ramp reads the true score (weight = score/942, intensity 1).
-      // heatmap-density runs 0..1 — turbo stops must be fractional.
+      // DIRECT score->color: every cell paints its exact turbo color, matching
+      // the legend (yellow ~70, orange ~80, red ~90+). No kernel mixing —
+      // "you can see where it is actually hot".
       id: LYR.heatSurface,
-      type: 'heatmap',
-      source: SRC.heatPts,
+      type: 'fill',
+      source: SRC.heat,
       paint: {
-        'heatmap-weight': [
-          'interpolate', ['linear'], ['get', 'heatScore'], 0, 0.0, 100, 0.106,
-        ] as never,
-        'heatmap-intensity': 1.0,
-        'heatmap-radius': 26,
-        'heatmap-color': turboExpressionDensity(['heatmap-density']) as never,
-        'heatmap-opacity': 0.75,
+        'fill-color': turboExpression(['get', 'heatScore']) as never,
+        'fill-opacity': 0.75,
       },
     },
     {
-      // Invisible cell polygons on the physics grid: reliable click target
-      // (heatmap layers cannot be queryRenderedFeatures'd).
+      // Invisible fill on the same source: reliable click target.
       id: LYR.heatHit,
       type: 'fill',
       source: SRC.heat,
       paint: { 'fill-opacity': 0 },
+    },
+    {
+      // The fastest-way comparison (dashed grey), under the chosen route.
+      id: LYR.routeFast,
+      type: 'line',
+      source: SRC.routeFast,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '#9aa4b2',
+        'line-width': 2.5,
+        'line-dasharray': [2, 2],
+      },
+    },
+    {
+      // The chosen route.
+      id: LYR.routeLine,
+      type: 'line',
+      source: SRC.route,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': '#22d3ee',
+        'line-width': 5,
+        'line-opacity': 0.95,
+      },
+    },
+    {
+      // Start (green) / end (red) markers.
+      id: LYR.routeDots,
+      type: 'circle',
+      source: SRC.routePts,
+      paint: {
+        'circle-radius': 7,
+        'circle-color': [
+          'match', ['get', 'kind'], 'start', '#4ade80', '#f87171',
+        ] as never,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2,
+      },
     },
     {
       id: LYR.coolingHalo,
@@ -213,28 +246,7 @@ export function setLayerVisible(map: maplibregl.Map, id: string, visible: boolea
 
 export function setHeatOpacity(map: maplibregl.Map, opacity: number): void {
   if (map.getLayer(LYR.heatSurface)) {
-    map.setPaintProperty(LYR.heatSurface, 'heatmap-opacity', opacity);
-  }
-}
-
-/**
- * Track the zoom: keep the kernel radius at 3x the current on-screen point
- * spacing so the surface stays one continuous field at every zoom level -
- * call after every viewport reload. Radius is in screen pixels.
- */
-export function setHeatRadiusForSpacing(map: maplibregl.Map, spacingPx: number): void {
-  if (map.getLayer(LYR.heatSurface)) {
-    map.setPaintProperty(LYR.heatSurface, 'heatmap-radius', Math.max(12, 3 * spacingPx));
-  }
-}
-
-export function setHeatPoints(map: maplibregl.Map, fc: GeoJSON.FeatureCollection): void {
-  (map.getSource(SRC.heatPts) as unknown as GeoJSONSourceLike | null)?.setData(fc);
-}
-
-export function setHeatRadius(map: maplibregl.Map, radius: number): void {
-  if (map.getLayer(LYR.heatSurface)) {
-    map.setPaintProperty(LYR.heatSurface, 'heatmap-radius', radius);
+    map.setPaintProperty(LYR.heatSurface, 'fill-opacity', opacity);
   }
 }
 

@@ -1,12 +1,17 @@
 /**
- * HeatMapPage — the judge-facing heat map (web rebuild).
+ * HeatMapPage — the map people actually use.
  *
- * FREE-PAN, ANYWHERE: the viewport itself is the query. Every pan/zoom asks
- * /heatmap/viewport for the visible bounds and the backend evaluates the real
- * physics per grid cell (shadow wedges, sky-view factor, published thermal
- * equations). Clicking anywhere inspects that exact coordinate via
- * /heat/point. No preset district buttons; the place search just flies the
- * camera. All heat values come from the backend's heat services.
+ * Plain-language rules for this page:
+ *  - No jargon in labels. "Tree cover", not "vegetation fraction".
+ *  - The heat layer is a DIRECT score->color paint: the color on screen is
+ *    the color in the legend. If it looks orange, it IS hot there.
+ *  - Click twice on the map (start, then end) to get a walking route that
+ *    avoids the worst heat, with an honest "how much longer / how much
+ *    cooler" comparison against the fastest route.
+ *  - Clicking an existing pin or route point picks it up again instead of
+ *    starting a new route.
+ *  - The physics stays published-equation real (see the "About this data"
+ *    section and the inspect panel fine print).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,8 +31,6 @@ import {
   LYR,
   setHeatData,
   setHeatOpacity as applyMapHeatOpacity,
-  setHeatPoints,
-  setHeatRadiusForSpacing,
   setLayerVisible,
   setOverlayData,
   SRC,
@@ -36,6 +39,8 @@ import { TimeControl, HOUR_STEPS } from './TimeControl';
 import { InspectPanel } from './InspectPanel';
 import { Legend } from './Legend';
 import { PlaceSearch } from './PlaceSearch';
+import { planRoute } from './coolRoute';
+import type { RoutePlan, RoutePoint } from './coolRoute';
 import type { GazetteerPlace } from './gazetteer';
 
 /** Centred on the harbour between Kowloon and Hong Kong Island. */
@@ -44,17 +49,14 @@ const HOME: { center: [number, number]; zoom: number } = {
   zoom: 13.4,
 };
 
-/** Hard-clip panning to the HK bounding region (app/core/geo.py HK_BOUNDS):
- *  the physics and city data exist only for Hong Kong, so locking the camera
- *  here keeps every evaluated cell inside the city (perf + honesty).
- *  MapLibre LngLatBoundsLike: [[west, south], [east, north]]. */
+/** Camera locked to HK: the physics and city data only exist here. */
 const HK_BOUNDS: [[number, number], [number, number]] = [
   [113.75, 21.9],
   [114.5, 22.65],
 ];
 
-/** Minimal style used only when the CDN basemap stalls (venue wifi): keeps
- *  the heat layer, cooling spots and interactions fully functional. */
+/** Minimal style used only when the CDN basemap stalls (bad wifi): the heat
+ *  layer, routes and interactions stay fully functional without it. */
 const BARE_STYLE: StyleSpecification = {
   version: 8,
   sources: {},
@@ -62,6 +64,15 @@ const BARE_STYLE: StyleSpecification = {
     { id: 'bg', type: 'background', paint: { 'background-color': '#0d1117' } },
   ],
 };
+
+type PickMode = 'idle' | 'picking-start' | 'picking-end';
+
+interface RouteUi {
+  start: RoutePoint;
+  end: RoutePoint;
+  plan: RoutePlan;
+  balance: number;
+}
 
 export default function HeatMapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -72,7 +83,6 @@ export default function HeatMapPage() {
   const [hour, setHour] = useState(14.5);
   const [field, setField] = useState<ViewportField | null>(null);
   const [loading, setLoading] = useState(false);
-  const [offlineGap, setOfflineGap] = useState(false);
 
   const [showHeat, setShowHeat] = useState(true);
   const [heatOpacity, setHeatOpacity] = useState(0.75);
@@ -80,6 +90,11 @@ export default function HeatMapPage() {
   const [showBuildings, setShowBuildings] = useState(false);
   const [showCooling, setShowCooling] = useState(true);
 
+  // --- route picking state machine -----------------------------------------
+  const [pickMode, setPickMode] = useState<PickMode>('idle');
+  const [pendingStart, setPendingStart] = useState<RoutePoint | null>(null);
+  const [pendingEnd, setPendingEnd] = useState<RoutePoint | null>(null);
+  const [route, setRoute] = useState<RouteUi | null>(null);
   const [selected, setSelected] = useState<HeatCell | null>(null);
   const [thermal, setThermal] = useState<HeatPointResult | null>(null);
   const [nearby, setNearby] = useState<CoolingSpot[]>([]);
@@ -99,15 +114,16 @@ export default function HeatMapPage() {
     mapRef.current = map;
     // Debug/demo hook: lets the console (and tests) inspect the live map.
     (window as unknown as { __coolpathMap?: MLMap }).__coolpathMap = map;
-    // Venue-wifi insurance: if the CDN basemap stalls, don't lose the heat
-    // field — swap to a minimal offline style after 8 s so the physics layer
-    // still renders (basemap is cosmetic; the heat data is the product).
+    // Venue-wifi insurance: if the CDN basemap stalls, swap to a minimal
+    // offline style after 8 s so the heat field still renders.
     const fallbackTimer = window.setTimeout(() => {
-      if (!map.style || !map.isStyleLoaded()) {
+      if (!map.isStyleLoaded()) {
         try {
           map.setStyle(BARE_STYLE, { diff: false });
+          addHeatSourcesAndLayers(map);
+          setMapReady(true);
         } catch {
-          /* map already removed on unmount */
+          /* unmounted */
         }
       }
     }, 8000);
@@ -129,7 +145,6 @@ export default function HeatMapPage() {
       const token = ++loadToken.current;
       const b = map.getBounds();
       setLoading(true);
-      setOfflineGap(false);
       api
         .viewport(
           {
@@ -144,24 +159,7 @@ export default function HeatMapPage() {
           if (token !== loadToken.current || !mapRef.current) return;
           setField(vf);
           setHeatData(mapRef.current, cellsToFC(vf.cells));
-          // Continuous surface: bilinear densification of the physics grid
-          // + kernel radius tracking (3x point spacing at the current zoom).
-          setHeatPoints(mapRef.current, densifyPoints(vf.cells));
-          const dLon = vf.cols > 1 ? (vf.bounds.east - vf.bounds.west) / vf.cols : 0;
-          if (dLon > 0) {
-            const latMid = (vf.bounds.south + vf.bounds.north) / 2;
-            const p1 = mapRef.current.project([vf.bounds.west, latMid]);
-            const p2 = mapRef.current.project([vf.bounds.west + dLon, latMid]);
-            setHeatRadiusForSpacing(
-              mapRef.current,
-              Math.hypot(p2.x - p1.x, p2.y - p1.y),
-            );
-          }
           setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
-          // Any mode producing zero cells here means the view has no data.
-          if (vf.cells.length === 0) {
-            setOfflineGap(true);
-          }
         })
         .catch(() => undefined)
         .finally(() => token === loadToken.current && setLoading(false));
@@ -215,14 +213,52 @@ export default function HeatMapPage() {
     const map = mapRef.current;
     if (!mapReady || !map) return;
     setLayerVisible(map, LYR.green, showGreen);
-    setLayerVisible(map, LYR.heatHit, showHeat);
     for (const id of [LYR.coolingHalo, LYR.coolingDots, LYR.coolingIcons, LYR.coolingLabels]) {
       setLayerVisible(map, id, showCooling);
     }
     setLayerVisible(map, LYR.buildings, showBuildings);
   }, [mapReady, showGreen, showHeat, showCooling, showBuildings, field]);
 
-  // --- click-to-inspect: ANY coordinate --------------------------------------
+  // --- route drawing ----------------------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    if (route) {
+      setOverlayData(map, SRC.route, {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: route.plan.chosen.line },
+          },
+        ],
+      });
+      setOverlayData(map, SRC.routeFast, {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: route.plan.fastest.line },
+          },
+        ],
+      });
+      setOverlayData(map, SRC.routePts, {
+        type: 'FeatureCollection',
+        features: [
+          pointFc(route.start, 'start'),
+          pointFc(route.end, 'end'),
+        ],
+      });
+    } else {
+      setOverlayData(map, SRC.route, emptyFc());
+      setOverlayData(map, SRC.routeFast, emptyFc());
+      setOverlayData(map, SRC.routePts, emptyFc());
+    }
+  }, [mapReady, route]);
+
+  // --- map clicks: pick pins, or start/end a route, else inspect --------------
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map || !field) return;
@@ -230,6 +266,63 @@ export default function HeatMapPage() {
     function onMapClick(e: MapMouseEvent) {
       const m = mapRef.current;
       if (!m) return;
+      const pt: RoutePoint = { lat: e.lngLat.lat, lon: e.lngLat.lng };
+
+      // Existing pins: click the start/end dot to pick it up and move it.
+      const pins = m.queryRenderedFeatures(e.point, { layers: [LYR.routeDots] });
+      const pinKind = pins[0]?.properties?.kind as string | undefined;
+      if (route && pinKind) {
+        if (pinKind === 'start') {
+          // Move the start: keep the existing end, ask for a new start.
+          setPendingEnd(route.end);
+          setPendingStart(null);
+          setPickMode('picking-start');
+        } else {
+          // Move the end: keep the existing start.
+          setPendingStart(route.start);
+          setPendingEnd(null);
+          setPickMode('picking-end');
+        }
+        setRoute(null);
+        return;
+      }
+
+      if (pickMode === 'picking-start') {
+        setPendingStart(pt);
+        if (pendingEnd && field) {
+          const plan = planRoute(field.cells, pt, pendingEnd, route?.balance ?? 1);
+          if (plan) {
+            setRoute({ start: pt, end: pendingEnd, plan, balance: route?.balance ?? 1 });
+            setPickMode('idle');
+            setPendingEnd(null);
+          } else {
+            setPendingEnd(null);
+            setPickMode('idle');
+          }
+        } else {
+          setPickMode('picking-end');
+        }
+      } else if (pickMode === 'idle' || !pendingStart) {
+        // First click: begin a route silently AND inspect the spot.
+        setPendingStart(pt);
+        setPendingEnd(null);
+        setPickMode('picking-end');
+      } else if (field) {
+        // Second click: build the route from the current heat field.
+        const plan = planRoute(field.cells, pendingStart, pt, 1);
+        if (plan) {
+          setRoute({ start: pendingStart, end: pt, plan, balance: 1 });
+          setPickMode('idle');
+          setPendingEnd(null);
+        } else {
+          // No walkable path (e.g. across the harbour): try a closer end.
+          setPendingStart(pt);
+          setPendingEnd(null);
+          setPickMode('picking-end');
+        }
+      }
+
+      // Inspect: always show the physics for the exact spot clicked.
       const feats = m.queryRenderedFeatures(e.point, {
         layers: [LYR.heatHit],
       });
@@ -239,7 +332,6 @@ export default function HeatMapPage() {
         setSelected(cell);
         setNearby(nearestCooling(viewCooling, cell.center, 500, 4));
       }
-      // Full published-equation physics at the exact clicked coordinate.
       api
         .heatPoint(e.lngLat.lat, e.lngLat.lng, hour)
         .then((p) => setThermal(p))
@@ -251,7 +343,7 @@ export default function HeatMapPage() {
       map.off('click', onMapClick);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapReady, field, viewCooling, hour]);
+  }, [mapReady, field, viewCooling, hour, pickMode, pendingStart, route]);
 
   // --- place search: fly anywhere, data follows the viewport -----------------
   function onPlacePicked(place: GazetteerPlace) {
@@ -264,9 +356,17 @@ export default function HeatMapPage() {
     });
   }
 
+  function setBalance(b: number) {
+    if (!route || !field) return;
+    const plan = planRoute(field.cells, route.start, route.end, b);
+    if (plan) setRoute({ ...route, plan, balance: b });
+  }
+
   const mean = field && field.cells.length
     ? field.cells.reduce((s, c) => s + c.heatScore, 0) / field.cells.length
     : null;
+
+  const live = field?.dataMode === 'viewport';
 
   return (
     <div className="app-body">
@@ -275,7 +375,7 @@ export default function HeatMapPage() {
           hour={hour}
           onChange={setHour}
           steps={HOUR_STEPS}
-          hint="Hourly heat: sun position changes building shade across the city."
+          hint="Slide through the day — shade moves, heat moves."
         />
 
         <div className="layer-toggles">
@@ -285,7 +385,7 @@ export default function HeatMapPage() {
               checked={showHeat}
               onChange={(e) => setShowHeat(e.target.checked)}
             />
-            Heat surface
+            Heat map
           </label>
           <div className="opacity-row">
             <span>opacity</span>
@@ -304,7 +404,7 @@ export default function HeatMapPage() {
               checked={showGreen}
               onChange={(e) => setShowGreen(e.target.checked)}
             />
-            Green coverage
+            Parks &amp; trees
           </label>
           <label>
             <input
@@ -312,7 +412,7 @@ export default function HeatMapPage() {
               checked={showBuildings}
               onChange={(e) => setShowBuildings(e.target.checked)}
             />
-            Building density
+            Tall-building areas
           </label>
           <label>
             <input
@@ -320,13 +420,43 @@ export default function HeatMapPage() {
               checked={showCooling}
               onChange={(e) => setShowCooling(e.target.checked)}
             />
-            Cooling spots
+            Cool places to rest
           </label>
         </div>
 
-        {loading && <div className="loading">Simulating heat field…</div>}
+        {loading && <div className="loading">Calculating…</div>}
+
+        {pickMode !== 'idle' && (
+          <div className="route-banner">
+            {pickMode === 'picking-start'
+              ? 'Click your START point on the map'
+              : 'Now click your END point'}{' '}
+            <button
+              className="route-cancel"
+              onClick={() => {
+                setPickMode('idle');
+                setPendingStart(null);
+                setPendingEnd(null);
+              }}
+            >
+              cancel
+            </button>
+          </div>
+        )}
 
         <Legend />
+
+        {route && (
+          <RouteCard
+            route={route}
+            onBalance={setBalance}
+            onClose={() => {
+              setRoute(null);
+              setPickMode('idle');
+              setPendingStart(null);
+            }}
+          />
+        )}
 
         <InspectPanel
           cell={selected}
@@ -341,32 +471,29 @@ export default function HeatMapPage() {
 
       <aside className="side-panel">
         <PlaceSearch onPick={onPlacePicked} />
-        <p className="placeholder" style={{ marginTop: 0 }}>
-          Pan or zoom anywhere in Hong Kong — the heat field regenerates for
-          the view. Click any spot for the physics behind it.
-        </p>
+
+        <div className="howto">
+          <p style={{ margin: '0 0 6px' }}>
+            <strong>Click two points</strong> on the map — start, then end —
+            and CoolPath finds a cooler way to walk there.
+          </p>
+          <p style={{ margin: 0, color: 'var(--text-dim)' }}>
+            Pan or zoom anywhere in Hong Kong; the heat picture rebuilds for
+            every view.
+          </p>
+        </div>
 
         {field && (
           <p
             className="placeholder"
             style={{
-              marginTop: 0,
-              color: field.dataMode === 'viewport' ? '#7ee787' : '#8ab4f8',
+              marginTop: 8,
+              color: live ? '#7ee787' : '#8ab4f8',
             }}
           >
-            {field.dataMode === 'viewport'
-              ? '● LIVE API — backend evaluates the published equations per cell'
-              : field.dataMode === 'engine-viewport'
-                ? '● OFFLINE ENGINE — same published equations, evaluated in-browser per cell'
-                : '● OFFLINE SNAPSHOT — flagship districts'}
-          </p>
-        )}
-
-        {offlineGap && (
-          <p className="placeholder" style={{ color: '#ffb86c' }}>
-            No heat data in this view — the camera is outside the Hong Kong
-            coverage region. Pan back toward the city; every HK district is
-            evaluated by the physics engine (no preset areas).
+            {live
+              ? '● Live — calculated fresh by the server just now'
+              : '● Offline mode — same physics, calculated in your browser'}
           </p>
         )}
 
@@ -374,28 +501,142 @@ export default function HeatMapPage() {
           <div className="score-pill" style={{ marginBottom: 12 }}>
             <span className="num">{Math.round(mean)}</span>
             <span className="cap">
-              mean over this view at {fmtHour(hour)}
+              how hot this view is on average at {fmtHour(hour)}
               <br />
               {field?.cells.filter((c) => c.heatScore >= 65).length ?? 0} hot
-              cells (≥65) · {field?.cells.length ?? 0} evaluated
+              spots · {field?.cells.length ?? 0} areas checked
             </span>
           </div>
         )}
 
         {field && (
           <>
-            <h3>About this layer</h3>
-            <p className="placeholder">{field.provenance.notes}</p>
-            {field.cells[0] && (
-              <p className="placeholder">
-                Sources: {field.cells[0].sources.join(' · ')}
-              </p>
-            )}
+            <h3>About this data</h3>
+            <p className="placeholder">{plainProvenance(field)}</p>
           </>
         )}
       </aside>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Route card: the honest tradeoff, in words a walker can act on.
+// ---------------------------------------------------------------------------
+
+function RouteCard({
+  route,
+  onBalance,
+  onClose,
+}: {
+  route: RouteUi;
+  onBalance: (b: number) => void;
+  onClose: () => void;
+}) {
+  const { chosen, fastest } = route.plan;
+  const extraMin = chosen.minutesHotPace - fastest.minutesHotPace;
+  const degreesCooler = fastest.meanHeat - chosen.meanHeat;
+  const winsOnTime = extraMin < -0.05; // >3 s quicker: display rounding
+  const winsOnHeat = degreesCooler > 0.5 || chosen.maxHeat < fastest.maxHeat - 0.5;
+  const coolerWins = winsOnTime || winsOnHeat;
+  const minsSaved = Math.round(-extraMin);
+  const timePhrase =
+    minsSaved >= 1
+      ? `${minsSaved} min quicker in today's heat`
+      : 'slightly quicker in today\'s heat';
+
+  const mins = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${Math.round(m % 60)}m` : `${Math.round(m)} min`);
+  const dist = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${Math.round(m)} m`);
+
+  return (
+    <div className="route-card">
+      <div className="route-card-head">
+        <strong>Your route</strong>
+        <button className="info-btn" onClick={onClose} title="Clear route">×</button>
+      </div>
+
+      <div className="route-balance">
+        <label style={{ fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={route.balance >= 0.5}
+            onChange={(e) => onBalance(e.target.checked ? 1 : 0)}
+          />
+          Prefer shade &amp; breeze (may take a few minutes longer)
+        </label>
+      </div>
+
+      <div className="route-rows">
+        <div className="route-row">
+          <span>Distance</span>
+          <span>{dist(chosen.distanceM)}</span>
+        </div>
+        <div className="route-row">
+          <span>Walking time in today's heat</span>
+          <span>{mins(chosen.minutesHotPace)}</span>
+        </div>
+        <div className="route-row dim">
+          <span>Fastest way instead</span>
+          <span>{mins(fastest.minutesHotPace)}</span>
+        </div>
+        <div className="route-row">
+          <span>Heat along the way (average)</span>
+          <span>{Math.round(chosen.meanHeat)}</span>
+        </div>
+      </div>
+
+      {coolerWins && (
+        <p className="route-verdict good">
+          {winsOnTime && !winsOnHeat
+            ? `Shade route: ${timePhrase} — and it dodges the worst spots.`
+            : winsOnTime && winsOnHeat
+              ? `Shade route wins both ways: ${timePhrase} and cooler on average.`
+              : `Only +${Math.round(Math.max(0, extraMin))} min vs the fastest way, but noticeably cooler on average (${Math.round(Math.abs(degreesCooler) * 10) / 10} pts less heat, peak ${Math.round(chosen.maxHeat)} vs ${Math.round(fastest.maxHeat)}).`}
+        </p>
+      )}
+      {!coolerWins && (
+        <p className="route-verdict">
+          The fastest way is already the coolest sensible option right now.
+        </p>
+      )}
+      <p className="route-fineprint">
+        Times assume a normal walking pace, slowed by heat the way people
+        actually slow down. The dashed grey line is the fastest way, for
+        comparison.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+function plainProvenance(field: ViewportField): string {
+  if (field.dataMode === 'engine-viewport' || field.dataMode === 'viewport') {
+    return (
+      'Every value on this map is calculated from published weather-science ' +
+      'equations (how sun, shade, humidity and building geometry combine), ' +
+      'combined with the actual street layout. It is a careful estimate, not ' +
+      'a thermometer on the street.'
+    );
+  }
+  return (
+    'This view shows a pre-calculated snapshot for the demo hours. Start the ' +
+    'backend for fully live calculations anywhere.'
+  );
+}
+
+function pointFc(p: RoutePoint, kind: 'start' | 'end'): GeoJSON.Feature {
+  return {
+    type: 'Feature',
+    properties: { kind },
+    geometry: { type: 'Point', coordinates: [p.lon, p.lat] },
+  };
+}
+
+function emptyFc(): GeoJSON.FeatureCollection {
+  return { type: 'FeatureCollection', features: [] };
 }
 
 function cellsToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
@@ -417,59 +658,6 @@ function cellsToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
       },
     })),
   };
-}
-
-/**
- * Densify the physics grid into a CONTINUOUS point field for the heatmap
- * renderer. Every input is a real per-cell physics evaluation; bilinear
- * interpolation only fills BETWEEN cell centres (quad interior points at
- * half-cell spacing) so the render kernels merge into ONE surface instead
- * of separate blobs — heat-score fields are smooth over a cell, and shade/
- * SVF vary over tens of metres while quads are at most a couple hundred.
- * Points carry the interpolated score as 'heatScore' for the kernel weight.
- */
-function densifyPoints(cells: HeatCell[]): GeoJSON.FeatureCollection {
-  const groups = new Map<string, { i: number; j: number; c: HeatCell }[]>();
-  for (const c of cells) {
-    const m = /^(?:eng|vp)-(\d+)-(\d+)$/.exec(c.cellId);
-    if (!m) continue;
-    const key = `${m[1]}/${m[2]}`;
-    const arr = groups.get(key);
-    if (arr) arr.push({ i: Number(m[1]), j: Number(m[2]), c });
-    else groups.set(key, [{ i: Number(m[1]), j: Number(m[2]), c }]);
-  }
-
-  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-  const features: GeoJSON.Feature[] = [];
-  const push = (lat: number, lon: number, score: number) => {
-    features.push({
-      type: 'Feature',
-      properties: { heatScore: Math.round(score * 10) / 10 },
-      geometry: { type: 'Point', coordinates: [lon, lat] },
-    });
-  };
-
-  for (const quad of groups.values()) {
-    if (quad.length !== 4) {
-      // Incomplete quad at the view edge: fall back to the cell centres.
-      for (const { c } of quad) push(c.center.lat, c.center.lon, c.heatScore);
-      continue;
-    }
-    // Numeric (i, j) order: a=TL, b=TR, c2=BL, d=BR.
-    const [a, b, c2, d] = [...quad].sort(
-      (p, q) => p.i - q.i || p.j - q.j,
-    ).map((q) => q.c);
-    const score = (s: number, t: number) =>
-      lerp(lerp(a.heatScore, b.heatScore, s), lerp(c2.heatScore, d.heatScore, s), t);
-    const lat = (s: number, t: number) =>
-      lerp(lerp(a.center.lat, b.center.lat, s), lerp(c2.center.lat, d.center.lat, s), t);
-    const lon = (s: number, t: number) =>
-      lerp(lerp(a.center.lon, b.center.lon, s), lerp(c2.center.lon, d.center.lon, s), t);
-    for (const [s, t] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
-      push(lat(s, t), lon(s, t), score(s, t));
-    }
-  }
-  return { type: 'FeatureCollection', features };
 }
 
 function spotsToFC(spots: CoolingSpot[]): GeoJSON.FeatureCollection {

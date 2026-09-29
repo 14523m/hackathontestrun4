@@ -23,13 +23,13 @@ export default function App() {
 
   let badge: { cls: string; text: string };
   if (dataMode === 'engine') {
-    badge = { cls: 'demo', text: 'OFFLINE ENGINE · SAME PUBLISHED EQUATIONS' };
+    badge = { cls: 'demo', text: 'Offline — physics runs in your browser' };
   } else if (backendMode === 'live') {
-    badge = { cls: 'live', text: 'LIVE · HKO OBSERVATIONS' };
+    badge = { cls: 'live', text: 'Live — real HK weather' };
   } else if (backendMode === 'stale') {
-    badge = { cls: 'stale', text: 'LIVE · STALE (last valid obs)' };
+    badge = { cls: 'stale', text: 'Live — last weather received' };
   } else {
-    badge = { cls: 'demo', text: 'DEMO · SIMULATED HEAT MODEL' };
+    badge = { cls: 'demo', text: 'Demo — simulated heat model' };
   }
 
   return (
@@ -37,9 +37,7 @@ export default function App() {
       <header className="app-header">
         <h1>🌳 HK CoolPath AI — Heat Map</h1>
         <span className={`badge ${badge.cls}`}>{badge.text}</span>
-        <span className="badge">
-          Heat layer: modelled (HKO-anchored + urban geometry)
-        </span>
+        <span className="badge">Estimates from weather + street layout — not measurements</span>
         <div className="spacer" />
         <button
           className="info-btn"
