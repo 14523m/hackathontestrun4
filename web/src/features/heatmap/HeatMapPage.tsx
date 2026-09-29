@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MapMouseEvent } from 'maplibre-gl';
 import { Map as MLMap } from 'maplibre-gl';
 
-import { api, apiState, nearestCooling } from '../../api/client';
+import { api, nearestCooling } from '../../api/client';
 import type {
   CoolingSpot,
   HeatCell,
@@ -41,6 +41,15 @@ const HOME: { center: [number, number]; zoom: number } = {
   center: [114.169, 22.302],
   zoom: 13.4,
 };
+
+/** Hard-clip panning to the HK bounding region (app/core/geo.py HK_BOUNDS):
+ *  the physics and city data exist only for Hong Kong, so locking the camera
+ *  here keeps every evaluated cell inside the city (perf + honesty).
+ *  MapLibre LngLatBoundsLike: [[west, south], [east, north]]. */
+const HK_BOUNDS: [[number, number], [number, number]] = [
+  [113.75, 21.9],
+  [114.5, 22.65],
+];
 
 export default function HeatMapPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -72,6 +81,7 @@ export default function HeatMapPage() {
       style: BASEMAP_STYLE_URL,
       center: HOME.center,
       zoom: HOME.zoom,
+      maxBounds: HK_BOUNDS,
       attributionControl: false,
     });
     mapRef.current = map;
@@ -110,7 +120,8 @@ export default function HeatMapPage() {
           setField(vf);
           setHeatData(mapRef.current, cellsToFC(vf.cells));
           setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
-          if (vf.dataMode === 'snapshot-viewport' && vf.cells.length === 0) {
+          // Any mode producing zero cells here means the view has no data.
+          if (vf.cells.length === 0) {
             setOfflineGap(true);
           }
         })
@@ -297,11 +308,27 @@ export default function HeatMapPage() {
           the view. Click any spot for the physics behind it.
         </p>
 
+        {field && (
+          <p
+            className="placeholder"
+            style={{
+              marginTop: 0,
+              color: field.dataMode === 'viewport' ? '#7ee787' : '#8ab4f8',
+            }}
+          >
+            {field.dataMode === 'viewport'
+              ? '● LIVE API — backend evaluates the published equations per cell'
+              : field.dataMode === 'engine-viewport'
+                ? '● OFFLINE ENGINE — same published equations, evaluated in-browser per cell'
+                : '● OFFLINE SNAPSHOT — flagship districts'}
+          </p>
+        )}
+
         {offlineGap && (
           <p className="placeholder" style={{ color: '#ffb86c' }}>
-            Offline snapshot has no embedded data for this view — start the API
-            (uvicorn on :8000) or return to Central &amp; Western, Yau Tsim
-            Mong or the conceptual Northern Metropolis.
+            No heat data in this view — the camera is outside the Hong Kong
+            coverage region. Pan back toward the city; every HK district is
+            evaluated by the physics engine (no preset areas).
           </p>
         )}
 

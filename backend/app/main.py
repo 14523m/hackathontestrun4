@@ -528,6 +528,24 @@ def equity(districtId: str = Query("central-western"),
 # the built SPA from this same origin - ONE server for API + UI on :8000.
 # API routes above are registered first, so they take precedence.
 # --------------------------------------------------------------------------- #
+
+
+@app.middleware("http")
+async def _api_prefix_alias(request, call_next):  # noqa: ANN001
+    """Accept /api/* as an alias of the root routes.
+
+    The web client calls /api/... (the same convention as the Vite dev
+    proxy, which rewrites /api away). When FastAPI serves the built SPA
+    itself there is no proxy, so the prefix is stripped here instead of
+    duplicating every route - otherwise live calls 404 and the UI silently
+    falls back to offline mode.
+    """
+    path = request.scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        request.scope["path"] = path[4:] or "/"
+    return await call_next(request)
+
+
 _WEB_DIST = REPO_ROOT / "web" / "dist"
 if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")

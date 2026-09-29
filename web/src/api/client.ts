@@ -4,16 +4,23 @@
  *
  * Resolution order (section 17 demo resilience):
  *   1. LIVE API (Vite dev proxy /api, or same-origin when FastAPI serves us)
- *   2. EMBEDDED OFFLINE SNAPSHOT (generated TS module) — static render of the
- *      SAME HeatPredictionService pipeline; the UI labels it "OFFLINE SNAPSHOT".
+ *   2. OFFLINE IN-BROWSER ENGINE (offlineEngine.ts) — the SAME published
+ *      equations evaluated per cell over the generated city skeleton (all 19
+ *      districts). Anywhere in Hong Kong, no server needed. UI labels it
+ *      "OFFLINE ENGINE".
  */
 
 import { SNAPSHOTS } from '../features/heatmap/demoSnapshots';
+import {
+  coolingNearFrom,
+  pointPrediction,
+  viewportField,
+} from '../features/heatmap/offlineEngine';
 
 const BASE: string = import.meta.env.VITE_API_BASE ?? '/api';
 const OFFLINE = `${import.meta.env.BASE_URL}demo`;
 
-export type DataMode = 'live' | 'snapshot';
+export type DataMode = 'live' | 'engine';
 
 export const apiState: { mode: DataMode } = { mode: 'live' };
 
@@ -50,6 +57,8 @@ export interface HeatCell {
   factors: FactorContribution[];
   sources: string[];
   isModelled: boolean;
+  /** True when the cell lies inside the offline engine's city skeleton. */
+  inCoverage?: boolean;
 }
 
 export interface HeatMapResponse {
@@ -108,19 +117,20 @@ function snapshotJson<T>(key: string): T {
   return hit as T;
 }
 
-async function withFallback<T>(live: () => Promise<T>, snapshot: () => Promise<T>): Promise<T> {
+async function withFallback<T>(live: () => Promise<T>, offline: () => Promise<T>): Promise<T> {
   try {
     const data = await live();
     apiState.mode = 'live';
     return data;
   } catch {
-    const data = await snapshot();
-    apiState.mode = 'snapshot';
+    const data = await offline();
+    apiState.mode = 'engine';
     return data;
   }
 }
 
-// Hours available in the bundled offline snapshot (backend/app/tools/export_demo_snapshot.py).
+// Hours embedded in the legacy flagship-district snapshots (kept for the
+// district-oriented api.heatmap / api.coolingSpots paths only).
 const SNAPSHOT_HOURS = [6, 9, 12, 15, 18, 21];
 
 function nearestSnapshotHour(hour: number): number {
@@ -171,86 +181,35 @@ interface ViewportBounds {
   east: number;
 }
 
-/** Districts whose snapshots are embedded for the offline demo. */
-const EMBEDDED_DISTRICTS = ['central-western', 'kowloon-yau-tsim', 'northern-metropolis'];
+// ---------------------------------------------------------------------------
+// Offline ENGINE fallbacks: real physics per cell, anywhere in Hong Kong.
+// ---------------------------------------------------------------------------
 
-function snapshotCells(districtId: string, hour: number): HeatCell[] {
-  const hit = SNAPSHOTS[`${districtId}|${nearestSnapshotHour(hour)}`] as
-    | { cells: HeatCell[] }
-    | undefined;
-  return hit?.cells ?? [];
+function engineViewport(b: ViewportBounds, hour: number, maxCells = 220): ViewportField {
+  return viewportField(b, hour, maxCells) as ViewportField;
 }
 
-/** Offline viewport: intersect embedded flagship districts with the bounds. */
-function viewportFromSnapshots(b: ViewportBounds, hour: number): ViewportField {
-  const cells: HeatCell[] = [];
-  for (const d of EMBEDDED_DISTRICTS) {
-    for (const c of snapshotCells(d, hour)) {
-      if (
-        c.center.lat >= b.south && c.center.lat <= b.north &&
-        c.center.lon >= b.west && c.center.lon <= b.east
-      ) {
-        cells.push(c);
-      }
-    }
-  }
-  return {
-    generatedAt: new Date().toISOString(),
-    validFor: new Date().toISOString(),
-    dataMode: 'snapshot-viewport',
-    isStale: false,
-    bounds: b,
-    cols: 0,
-    rows: 0,
-    cells,
-    legend: {},
-    provenance: {
-      sources: ['embedded offline snapshot'],
-      observed: false,
-      modelled: true,
-      confidence: 0.5,
-      notes: cells.length
-        ? 'OFFLINE SNAPSHOT: embedded flagship-district cells inside this view.'
-        : 'OFFLINE SNAPSHOT: no embedded data for this area (needs the live API).',
-    },
-  };
+function enginePoint(lat: number, lon: number, hour: number): HeatPointResult {
+  return pointPrediction(lat, lon, hour) as HeatPointResult;
 }
 
-/** Offline point: nearest embedded cell within ~2 km, else fail honestly. */
-function pointFromSnapshots(lat: number, lon: number, hour: number): HeatPointResult {
-  let best: HeatCell | null = null;
-  let bestD = Infinity;
-  for (const d of EMBEDDED_DISTRICTS) {
-    for (const c of snapshotCells(d, hour)) {
-      const dist = haversineM({ lat, lon }, c.center);
-      if (dist < bestD) {
-        best = c;
-        bestD = dist;
-      }
-    }
-  }
-  if (!best || bestD > 2000) throw new Error('no offline data near this point');
-  return {
-    heatScore: best.heatScore,
-    temperatureC: 0,
-    apparentTemperatureShadeC: 0,
-    apparentTemperatureSunC: 0,
-    wetBulbC: 0,
-    wbgtShadeC: 0,
-    meanRadiantTempC: 0,
-    skyViewFactor: 0,
-    shadeScore: best.shadeScore,
-    vegetationScore: best.vegetationScore,
-    buildingDensity: best.buildingDensity,
-    windScore: best.windScore,
-    isDaytime: true,
-    districtId: null,
-    factors: best.factors,
-    confidence: best.confidence,
-    isModelled: true,
-    sources: best.sources,
-    offlineApproximate: true,
-  };
+function engineCoolingNear(
+  lat: number,
+  lon: number,
+  maxM: number,
+  limit: number,
+): CoolingSpot[] {
+  return coolingNearFrom(lat, lon, maxM, limit).map((s, i) => ({
+    id: `eng-cool-${lat.toFixed(4)}-${lon.toFixed(4)}-${i}`,
+    name: s.n,
+    location: { lat: s.lat, lon: s.lon },
+    type: s.t,
+    coolingLevel: 3,
+    openingHours: '07:00–23:00',
+    accessibility: true,
+    simulated: true,
+    distanceMeters: Math.round(s.distanceMeters),
+  }));
 }
 
 export const api = {
@@ -275,7 +234,7 @@ export const api = {
         getJson(
           `${BASE}/heat/point?lat=${lat}&lon=${lon}&hour=${hour}`,
         ),
-      async () => pointFromSnapshots(lat, lon, hour),
+      async () => enginePoint(lat, lon, hour),
     ),
 
   viewport: (b: ViewportBounds, hour: number, maxCells = 220) =>
@@ -285,32 +244,37 @@ export const api = {
           `${BASE}/heatmap/viewport?south=${b.south}&west=${b.west}` +
             `&north=${b.north}&east=${b.east}&hour=${hour}&maxCells=${maxCells}`,
         ),
-      async () => viewportFromSnapshots(b, hour),
+      async () => engineViewport(b, hour, maxCells),
     ),
 
-  /** Nearest cooling spots to a coordinate (live backend supports this). */
+  /** Nearest cooling spots to a coordinate, with the engine as fallback. */
   coolingNear: (lat: number, lon: number, maxM = 500, limit = 4) =>
-    getJson<CoolingSpot[]>(
-      `${BASE}/cooling-spots?lat=${lat}&lon=${lon}` +
-        `&maxDistanceMeters=${maxM}&limit=${limit}`,
+    withFallback<CoolingSpot[]>(
+      () =>
+        getJson<CoolingSpot[]>(
+          `${BASE}/cooling-spots?lat=${lat}&lon=${lon}` +
+            `&maxDistanceMeters=${maxM}&limit=${limit}`,
+        ),
+      async () => engineCoolingNear(lat, lon, maxM, limit),
     ),
 
   dataSources: () =>
     withFallback<{ dataMode: string; sources: DataSourceInfo[]; disclaimer: string }>(
       () => getJson(`${BASE}/config/data-sources`),
       async () => ({
-        dataMode: 'snapshot',
+        dataMode: 'engine',
         sources: [
           {
             id: 'hko',
             name: 'Hong Kong Observatory',
             role: 'Weather anchors (live when DATA_MODE=live)',
-            status: 'simulated in this snapshot',
+            status: 'demo hot-season diurnal cycle offline',
             url: 'https://www.hko.gov.hk/en/abouthko/opendata_intro.htm',
           },
         ],
         disclaimer:
-          'OFFLINE SNAPSHOT: static render of the simulated heat pipeline. All values are modelled estimates.',
+          'OFFLINE ENGINE: the same published heat equations run in-browser ' +
+          'over the generated city skeleton. All values are modelled estimates.',
       }),
     ),
 };
@@ -340,3 +304,5 @@ export function nearestCooling(
     .sort((x, y) => (x.distanceMeters ?? 0) - (y.distanceMeters ?? 0))
     .slice(0, limit);
 }
+
+export { OFFLINE };
