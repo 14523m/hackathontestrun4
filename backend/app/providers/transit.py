@@ -175,6 +175,17 @@ class TransitNetwork:
         out.sort(key=lambda t: t[1])
         return [(k, d) for k, d in out if d <= limit_m][:3]
 
+    def nearest_mtr_any(self, lat: float, lon: float) -> Tuple[str, float]:
+        """Closest MTR station regardless of distance — used for the walk+
+        ride fallback so a trip FROM anywhere can still end on the rail
+        network (e.g. a 6.7 km bus-and-walk access from Sai Kung is shown
+        honestly as its own access leg, not silently dropped)."""
+        best = min(
+            MTR_STATIONS,
+            key=lambda s: haversine_m(lat, lon, s["lat"], s["lon"]),
+        )
+        return best["id"], haversine_m(lat, lon, best["lat"], best["lon"])
+
     def mtr_route(self, a: str, b: str) -> Optional[List[Tuple[str, str]]]:
         """Dijkstra fewest-interchange route: [(station_id, line)] a -> b.
 

@@ -818,7 +818,18 @@ function RouteCard({
     <div className="route-card">
       <div className="route-card-head">
         <strong>Your route</strong>
-        <button className="info-btn" onClick={onClose} title="Clear route">×</button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&origin=${route.start.lat},${route.start.lon}&destination=${route.end.lat},${route.end.lon}&travelmode=walking`}
+            target="_blank"
+            rel="noreferrer"
+            title="Open this trip in Google Maps for turn-by-turn navigation"
+            style={{ fontSize: 12, color: '#8ab4f8', textDecoration: 'none', alignSelf: 'center' }}
+          >
+            Google Maps ↗
+          </a>
+          <button className="info-btn" onClick={onClose} title="Clear route">×</button>
+        </div>
       </div>
 
       <div className="route-balance">

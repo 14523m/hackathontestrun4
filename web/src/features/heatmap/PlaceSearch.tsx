@@ -10,7 +10,79 @@ export interface SearchPlace {
   location: { lat: number; lon: number };
   kind: string;
   /** Where the result came from, shown in the dropdown for trust. */
-  source: 'photon' | 'gazetteer';
+  source: 'photon' | 'gazetteer' | 'paste';
+}
+
+/**
+ * Parse a pasted location: Google Maps URLs (place/, @lat,lon, ?q=, !3d!4d),
+ * bare "lat, lon" pairs, or geo: URIs. Returns null when the text isn't one.
+ * Only coordinates are extracted — Google's route/geocode DATA is never
+ * fetched (their terms forbid reuse outside their map); a pasted link is
+ * just the user handing us a pin they already have.
+ */
+export function parsePastedLocation(text: string): SearchPlace | null {
+  const t = text.trim();
+  if (!t) return null;
+
+  // geo:48.2,16.4?q=... or bare "22.319, 114.169"
+  const bare = /(-?\d{1,2}\.\d{3,})[\s,;]+(-?\d{1,3}\.\d{3,})/.exec(t);
+  if (bare) {
+    const lat = parseFloat(bare[1]);
+    const lon = parseFloat(bare[2]);
+    if (isFinite(lat) && isFinite(lon)) {
+      return {
+        id: `paste-${lat},${lon}`,
+        name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
+        location: { lat, lon },
+        kind: 'pasted pin',
+        source: 'paste',
+      };
+    }
+  }
+
+  // @22.3190,114.1690 (Google Maps center marker)
+  const at = /@(-?\d+\.\d+),(-?\d+\.\d+)/.exec(t);
+  if (at) {
+    const lat = parseFloat(at[1]);
+    const lon = parseFloat(at[2]);
+    return {
+      id: `paste-${lat},${lon}`,
+      name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
+      location: { lat, lon },
+      kind: 'pasted pin',
+      source: 'paste',
+    };
+  }
+
+  // !3d22.3190!4d114.1690 (place-page coordinates)
+  const bang3 = /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/.exec(t);
+  if (bang3) {
+    const lat = parseFloat(bang3[1]);
+    const lon = parseFloat(bang3[2]);
+    return {
+      id: `paste-${lat},${lon}`,
+      name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
+      location: { lat, lon },
+      kind: 'pasted pin',
+      source: 'paste',
+    };
+  }
+
+  // ?q=...&ll= or ?query=lat,lon
+  const q = /[?&](?:q|query|ll|destination)=(-?\d+\.\d+)[,%2C\s]+(-?\d+\.\d+)/i.exec(t);
+  if (q) {
+    const lat = parseFloat(q[1]);
+    const lon = parseFloat(q[2]);
+    return {
+      id: `paste-${lat},${lon}`,
+      name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`,
+      location: { lat, lon },
+      kind: 'pasted pin',
+      source: 'paste',
+    };
+  }
+
+  return null;
 }
 
 interface PlaceSearchProps {
@@ -61,6 +133,14 @@ export function PlaceSearch({ label, placeholder, onPick }: PlaceSearchProps) {
     const q = query.trim();
     if (q.length < 2) {
       setRemote([]);
+      setBusy(false);
+      return;
+    }
+    // A pasted Google Maps link / coordinates short-circuits the geocoder:
+    // instant exact pin, no network.
+    const pasted = parsePastedLocation(q);
+    if (pasted) {
+      setRemote([pasted]);
       setBusy(false);
       return;
     }

@@ -101,8 +101,15 @@ class TransitPlanner:
     ) -> Optional[Dict[str, Any]]:
         board = self.net.nearest_mtr(from_lat, from_lon)
         alight = self.net.nearest_mtr(to_lat, to_lon)
-        if not board or not alight:
-            return None
+        # Walk+ride fallback: origins/destinations far from any station
+        # (Sai Kung, mid-NT villages) still get an honest itinerary — long
+        # access leg shown in plain words — instead of an empty result.
+        if not board:
+            sid, dist = self.net.nearest_mtr_any(from_lat, from_lon)
+            board = [(sid, dist)]
+        if not alight:
+            sid, dist = self.net.nearest_mtr_any(to_lat, to_lon)
+            alight = [(sid, dist)]
         best: Optional[Dict[str, Any]] = None
         for (bs, bd), (asx, ad) in [
             ((b, d1), (a, d2)) for b, d1 in board for a, d2 in alight
@@ -311,4 +318,11 @@ class TransitPlanner:
                     }
                 )
         out.sort(key=lambda x: x["totalMin"])
+        # Flag itineraries whose access walk exceeds a realistic 25 min: the
+        # UI shows a caveat instead of pretending it's convenient.
+        for it in out:
+            long_walk = max(it["walkInM"], it["walkOutM"]) > 2000
+            it["longAccess"] = long_walk
+            if long_walk:
+                it["label"] += " (+ long walk)"
         return out
