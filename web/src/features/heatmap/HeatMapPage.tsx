@@ -50,6 +50,8 @@ import { PlaceSearch } from './PlaceSearch';
 import type { SearchPlace } from './PlaceSearch';
 import { planRouteAccurate } from './coolRoute';
 import type { RoutePlan, RoutePoint } from './coolRoute';
+import { fetchTransitPlan } from './transitApi';
+import type { TransitItinerary } from './transitApi';
 import {
   boundsOfCells,
   prefetchStreetsForMap,
@@ -119,6 +121,10 @@ export default function HeatMapPage() {
   const streetsRef = useRef<import('./osmStreets').StreetNet | null>(null);
   // Serialises async route planning: only the newest request may set state.
   const routeToken = useRef(0);
+  // Transit itineraries for the last search. Declared BEFORE the map-leg
+  // effect that reads them (hooks must not be used before declaration).
+  const [transitOptions, setTransitOptions] = useState<TransitItinerary[]>([]);
+  const [showTransit, setShowTransit] = useState(true);
   // Whole-territory raster (kept in a ref too: routes need it as the
   // anywhere-sampler, and a ref avoids re-subscribing the click handler).
   const territoryRef = useRef<TerritoryGrid | null>(null);
@@ -305,6 +311,26 @@ export default function HeatMapPage() {
     setLayerVisible(map, LYR.buildings, showBuildings);
   }, [mapReady, showGreen, showHeat, showCooling, showBuildings, showTerritory, field]);
 
+  // --- transit leg drawing ----------------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const shown = showTransit && transitOptions.length > 0 ? transitOptions[0] : null;
+    if (shown) {
+      setOverlayData(map, SRC.transit, {
+        type: 'FeatureCollection',
+        features: shown.legs.map((leg, i) => ({
+          type: 'Feature' as const,
+          id: `tr-${i}`,
+          properties: { mode: leg.mode, line: leg.line },
+          geometry: { type: 'LineString' as const, coordinates: leg.coords },
+        })),
+      });
+    } else {
+      setOverlayData(map, SRC.transit, emptyFc());
+    }
+  }, [mapReady, transitOptions, showTransit]);
+
   // --- route drawing ----------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
@@ -448,31 +474,39 @@ export default function HeatMapPage() {
     }
   }
 
-  /** Search-driven route: the accurate planner on real streets. */
+  /** Search-driven route: transit options + walk route, side by side. */
   function runSearchRoute() {
     if (!searchFrom || !searchTo || !field) return;
     setSearching(true);
     setSearchError(null);
     const token = ++routeToken.current;
-    void planRouteAccurate(
+    const start = { lat: searchFrom.location.lat, lon: searchFrom.location.lon };
+    const end = { lat: searchTo.location.lat, lon: searchTo.location.lon };
+    const walkPlan = planRouteAccurate(
       field.cells,
-      { lat: searchFrom.location.lat, lon: searchFrom.location.lon },
-      { lat: searchTo.location.lat, lon: searchTo.location.lon },
+      start,
+      end,
       1,
       streetsRef.current,
       territoryRef.current,
-    )
-      .then((plan) => {
-        if (!plan || token !== routeToken.current) {
+    );
+    const transitPlan = fetchTransitPlan(start, end, ['mtr', 'bus']);
+    void Promise.all([walkPlan, transitPlan])
+      .then(([plan, transit]) => {
+        if (token !== routeToken.current) return;
+        if (!plan && !transit) {
           setSearchError('No walkable route found between those places.');
           return;
         }
-        setRoute({
-          start: { lat: searchFrom.location.lat, lon: searchFrom.location.lon },
-          end: { lat: searchTo.location.lat, lon: searchTo.location.lon },
-          plan,
-          balance: 1,
-        });
+        if (plan) {
+          setRoute({
+            start,
+            end,
+            plan,
+            balance: 1,
+          });
+        }
+        setTransitOptions(transit?.itineraries ?? []);
         setPickMode('idle');
         setPendingStart(null);
         setPendingEnd(null);
@@ -638,6 +672,67 @@ export default function HeatMapPage() {
         </button>
         {searchError && (
           <p style={{ margin: '-6px 0 10px', fontSize: 12, color: '#f88' }}>{searchError}</p>
+        )}
+
+        {transitOptions.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: 4,
+              }}
+            >
+              <strong style={{ fontSize: 12 }}>Or take public transport</strong>
+              <label style={{ fontSize: 11, color: 'var(--text-dim)' }}>
+                <input
+                  type="checkbox"
+                  checked={showTransit}
+                  onChange={(e) => setShowTransit(e.target.checked)}
+                />{' '}
+                show on map
+              </label>
+            </div>
+            {transitOptions.map((it, i) => (
+              <button
+                key={i}
+                onClick={() => setShowTransit(true)}
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  textAlign: 'left',
+                  background: 'var(--panel-2)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                  padding: '7px 9px',
+                  marginBottom: 5,
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <strong style={{ fontSize: 13 }}>
+                    {it.mode === 'mtr' ? '🚇' : '🚌'} {it.label}
+                  </strong>
+                  <span style={{ fontSize: 13 }}>{Math.round(it.totalMin)} min</span>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-dim)', marginTop: 2 }}>
+                  HKD {it.fare.toFixed(1)} · {it.transfers} transfer{it.transfers === 1 ? '' : 's'}
+                  · walk {it.walkInM} m + {it.walkOutM} m (heat-scored)
+                </div>
+                <div style={{ fontSize: 11, marginTop: 2 }}>
+                  {it.legs
+                    .map((l) => `${l.line}: ${l.fromStation} → ${l.toStation}`)
+                    .join(' · ')}
+                </div>
+              </button>
+            ))}
+            <p style={{ margin: '2px 0 0', fontSize: 11, color: 'var(--text-dim)' }}>
+              Trains and buses are air-conditioned — heat doesn't slow them
+              down. The walk to and from each stop is heat-scored.
+            </p>
+          </div>
         )}
 
         <div className="howto">

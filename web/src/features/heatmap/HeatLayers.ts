@@ -19,6 +19,7 @@ export const SRC = {
   route: 'route-src',
   routeFast: 'route-fast-src',
   routePts: 'route-pts-src',
+  transit: 'transit-src',
 } as const;
 
 export const LYR = {
@@ -29,6 +30,7 @@ export const LYR = {
   buildings: 'buildings-fill',
   routeFast: 'route-fast-line',
   routeLine: 'route-line',
+  transitLine: 'transit-line',
   routeDots: 'route-dots',
   coolingHalo: 'cooling-halo',
   coolingDots: 'cooling-dots',
@@ -84,6 +86,7 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
     [SRC.route]: { type: 'geojson', data: EMPTY_FC },
     [SRC.routeFast]: { type: 'geojson', data: EMPTY_FC },
     [SRC.routePts]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.transit]: { type: 'geojson', data: EMPTY_FC },
   };
 
   const layers: LayerSpecification[] = [
@@ -162,6 +165,26 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
       paint: {
         'line-color': '#22d3ee',
         'line-width': 5,
+        'line-opacity': 0.95,
+      },
+    },
+    {
+      // Transit legs (MTR/bus): per-leg colour by mode, dashed to read as
+      // "vehicle", not walkable street. Data set from the page.
+      id: LYR.transitLine,
+      type: 'line',
+      source: SRC.transit,
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: {
+        'line-color': [
+          'match',
+          ['get', 'mode'] as never,
+          'mtr', '#a78bfa',
+          'bus', '#fbbf24',
+          '#94a3b8',
+        ] as never,
+        'line-width': 4,
+        'line-dasharray': [1.5, 1.5],
         'line-opacity': 0.95,
       },
     },

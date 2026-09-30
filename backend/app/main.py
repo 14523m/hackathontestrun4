@@ -70,6 +70,10 @@ app = FastAPI(
         "Kong. Predictions are modelled estimates, not measurements."
     ),
 )
+from app.routes.transit import router as transit_router
+
+app.include_router(transit_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
