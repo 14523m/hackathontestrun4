@@ -1,0 +1,24 @@
+0 verbose cli /usr/local/bin/node /usr/local/bin/npm
+1 info using npm@11.19.0
+2 info using node@v24.21.0
+3 silly config load:file:/usr/local/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/kita/Desktop/HKUST/hackathontestrun4/web/.npmrc
+5 silly config load:file:/Users/kita/Desktop/HKUST/hackathontestrun4/.freebuff/sponsored-runtime/***/home/.npmrc
+6 silly config load:file:/usr/local/etc/npmrc
+7 verbose title npm run build
+8 verbose argv "run" "build"
+9 verbose logfile logs-max:10 dir:/Users/kita/Desktop/HKUST/hackathontestrun4/.freebuff/sponsored-runtime/***/home/.npm/_logs/2026-09-29T07_37_17_118Z-
+10 verbose logfile /Users/kita/Desktop/HKUST/hackathontestrun4/.freebuff/sponsored-runtime/***/home/.npm/_logs/2026-09-29T07_37_17_118Z-debug-0.log
+11 silly logfile done cleaning log files
+12 http fetch GET 200 https://registry.npmjs.org/npm 6194ms
+13 verbose cwd /Users/kita/Desktop/HKUST/hackathontestrun4/web
+14 verbose os Darwin 25.5.0
+15 verbose node v24.21.0
+16 verbose npm  v11.19.0
+17 notice
+17 notice New major version of npm available! 11.19.0 -> 12.1.0
+17 notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+17 notice To update run: npm install -g npm@12.1.0
+17 notice  { force: true, Symbol(proc-log.meta): true }
+18 verbose exit 0
+19 info ok
