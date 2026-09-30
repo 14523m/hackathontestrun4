@@ -51,3 +51,6 @@ example
 # generated native folders
 /ios
 /android
+
+# Freebuff agent runtime (sandbox home, caches)
+.freebuff/

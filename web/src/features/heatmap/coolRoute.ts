@@ -24,6 +24,8 @@
  */
 
 import type { HeatCell } from '../../api/client';
+import { makeSampler, planOnStreets } from './osmStreets';
+import type { StreetNet } from './osmStreets';
 
 export interface RoutePoint {
   lat: number;
@@ -42,6 +44,8 @@ export interface RouteSummary {
 export interface RoutePlan {
   chosen: RouteSummary;
   fastest: RouteSummary;
+  /** 'streets' = real OSM foot network; 'grid' = physics-grid estimate. */
+  source: 'streets' | 'grid';
 }
 
 const FAST_PACE_MIN_PER_M = 12 / 1000; // 12 min/km ≈ 5 km/h
@@ -278,13 +282,40 @@ function summarize(
 /**
  * Plan a route. balance 0 = fastest (heat ignored), 1 = coolest (heat-aware
  * pace). Returns the chosen route plus the pure-fastest one for comparison.
+ *
+ * When a real street network is available (OpenStreetMap, see osmStreets.ts)
+ * the route follows footpaths, crossings and sidewalks a human can walk; the
+ * heat-cell grid remains the fallback whenever that network is missing —
+ * same pace model, same honest tradeoffs, coarser geometry.
  */
 export function planRoute(
   cells: HeatCell[],
   start: RoutePoint,
   end: RoutePoint,
   balance: number,
+  streets?: StreetNet | null,
 ): RoutePlan | null {
+  if (streets) {
+    const sampler = makeSampler(cells);
+    if (sampler) {
+      const fast = planOnStreets(
+        streets, sampler, start, end, false,
+        heatPaceMinPerM, FAST_PACE_MIN_PER_M,
+      );
+      if (fast) {
+        const cool =
+          balance >= 0.5
+            ? planOnStreets(
+                streets, sampler, start, end, true,
+                heatPaceMinPerM, FAST_PACE_MIN_PER_M,
+              )
+            : null;
+        // Coolest failing must not throw away a good street route.
+        return { chosen: cool ?? fast, fastest: fast, source: 'streets' };
+      }
+    }
+  }
+
   const grid = buildGrid(cells);
   if (!grid) return null;
   const s = nearestNode(grid, start);
@@ -305,5 +336,5 @@ export function planRoute(
       if (coolPts.length >= 2) chosen = summarize(coolPts, grid);
     }
   }
-  return { chosen, fastest };
+  return { chosen, fastest, source: 'grid' };
 }

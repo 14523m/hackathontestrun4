@@ -35,12 +35,19 @@ import {
   setOverlayData,
   SRC,
 } from './HeatLayers';
+import { buildTerritoryFeatures } from './territoryRaster';
+import type { TerritoryGrid } from './territoryRaster';
 import { TimeControl, HOUR_STEPS } from './TimeControl';
 import { InspectPanel } from './InspectPanel';
 import { Legend } from './Legend';
 import { PlaceSearch } from './PlaceSearch';
 import { planRoute } from './coolRoute';
 import type { RoutePlan, RoutePoint } from './coolRoute';
+import {
+  boundsOfCells,
+  prefetchStreetsForMap,
+  prefetchStreetsFromOverpass,
+} from './osmStreets';
 import type { GazetteerPlace } from './gazetteer';
 
 /** Centred on the harbour between Kowloon and Hong Kong Island. */
@@ -85,6 +92,7 @@ export default function HeatMapPage() {
   const [loading, setLoading] = useState(false);
 
   const [showHeat, setShowHeat] = useState(true);
+  const [showTerritory, setShowTerritory] = useState(true);
   const [heatOpacity, setHeatOpacity] = useState(0.75);
   const [showGreen, setShowGreen] = useState(false);
   const [showBuildings, setShowBuildings] = useState(false);
@@ -99,6 +107,10 @@ export default function HeatMapPage() {
   const [thermal, setThermal] = useState<HeatPointResult | null>(null);
   const [nearby, setNearby] = useState<CoolingSpot[]>([]);
   const [viewCooling, setViewCooling] = useState<CoolingSpot[]>([]);
+
+  // Latest street network for the current field (a ref so the click handler
+  // always reads it synchronously without re-subscribing listeners).
+  const streetsRef = useRef<import('./osmStreets').StreetNet | null>(null);
 
   // --- map lifecycle --------------------------------------------------------
   useEffect(() => {
@@ -179,6 +191,44 @@ export default function HeatMapPage() {
     };
   }, [mapReady, hour, loadViewport]);
 
+  // Whole-territory raster: fetched once, drawn as the base heat layer.
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${import.meta.env.VITE_API_BASE ?? '/api'}/heatmap/territory`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((grid: TerritoryGrid) => {
+        if (cancelled || !mapRef.current) return;
+        setOverlayData(mapRef.current, SRC.territory, buildTerritoryFeatures(grid));
+      })
+      .catch(() => undefined); // raster optional: viewport layer still works
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Real-street network (OpenStreetMap) for the current view: read straight
+  // from the basemap's loaded vector tiles — no extra requests, no rate
+  // limits — with Overpass as a fallback for views whose tiles fall short.
+  // A slow/failed refetch keeps the last working network (streets barely
+  // change between adjacent views); only a genuinely null first build leaves
+  // routes on the grid fallback.
+  useEffect(() => {
+    if (!field || field.cells.length === 0) return;
+    let cancelled = false;
+    const load = async () => {
+      const map = mapRef.current;
+      let net = map ? await prefetchStreetsForMap(map) : null;
+      if (!net && !cancelled) {
+        net = await prefetchStreetsFromOverpass(boundsOfCells(field.cells));
+      }
+      if (!cancelled && net) streetsRef.current = net;
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [field]);
+
   // Cooling spots near the map centre (all districts, nearest-first).
   useEffect(() => {
     const map = mapRef.current;
@@ -213,12 +263,13 @@ export default function HeatMapPage() {
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
+    setLayerVisible(map, LYR.territory, showTerritory);
     setLayerVisible(map, LYR.green, showGreen);
     for (const id of [LYR.coolingHalo, LYR.coolingDots, LYR.coolingIcons, LYR.coolingLabels]) {
       setLayerVisible(map, id, showCooling);
     }
     setLayerVisible(map, LYR.buildings, showBuildings);
-  }, [mapReady, showGreen, showHeat, showCooling, showBuildings, field]);
+  }, [mapReady, showGreen, showHeat, showCooling, showBuildings, showTerritory, field]);
 
   // --- route drawing ----------------------------------------------------------
   useEffect(() => {
@@ -291,7 +342,7 @@ export default function HeatMapPage() {
       if (pickMode === 'picking-start') {
         setPendingStart(pt);
         if (pendingEnd && field) {
-          const plan = planRoute(field.cells, pt, pendingEnd, route?.balance ?? 1);
+          const plan = planRoute(field.cells, pt, pendingEnd, route?.balance ?? 1, streetsRef.current);
           if (plan) {
             setRoute({ start: pt, end: pendingEnd, plan, balance: route?.balance ?? 1 });
             setPickMode('idle');
@@ -310,7 +361,7 @@ export default function HeatMapPage() {
         setPickMode('picking-end');
       } else if (field) {
         // Second click: build the route from the current heat field.
-        const plan = planRoute(field.cells, pendingStart, pt, 1);
+        const plan = planRoute(field.cells, pendingStart, pt, 1, streetsRef.current);
         if (plan) {
           setRoute({ start: pendingStart, end: pt, plan, balance: 1 });
           setPickMode('idle');
@@ -359,7 +410,7 @@ export default function HeatMapPage() {
 
   function setBalance(b: number) {
     if (!route || !field) return;
-    const plan = planRoute(field.cells, route.start, route.end, b);
+    const plan = planRoute(field.cells, route.start, route.end, b, streetsRef.current);
     if (plan) setRoute({ ...route, plan, balance: b });
   }
 
@@ -399,6 +450,14 @@ export default function HeatMapPage() {
               onChange={(e) => setHeatOpacity(parseFloat(e.target.value))}
             />
           </div>
+          <label>
+            <input
+              type="checkbox"
+              checked={showTerritory}
+              onChange={(e) => setShowTerritory(e.target.checked)}
+            />
+            Whole-territory heat
+          </label>
           <label>
             <input
               type="checkbox"
@@ -601,9 +660,9 @@ function RouteCard({
         </p>
       )}
       <p className="route-fineprint">
-        Times assume a normal walking pace, slowed by heat the way people
-        actually slow down. The dashed grey line is the fastest way, for
-        comparison.
+        {route.plan.source === 'streets'
+          ? 'Follows real streets and footpaths (OpenStreetMap). Times assume a normal walking pace, slowed by heat the way people actually slow down. The dashed grey line is the fastest way, for comparison.'
+          : 'Offline estimate — follows the heat grid, not exact streets. Times assume a normal walking pace, slowed by heat the way people actually slow down. The dashed grey line is the fastest way, for comparison.'}
       </p>
     </div>
   );

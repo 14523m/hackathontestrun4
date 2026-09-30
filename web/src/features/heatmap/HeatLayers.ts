@@ -11,6 +11,7 @@ import type { LayerSpecification, SourceSpecification } from 'maplibre-gl';
 import { turboExpression } from './colors';
 
 export const SRC = {
+  territory: 'territory-src',
   heat: 'heat-src',
   green: 'green-src',
   buildings: 'buildings-src',
@@ -21,6 +22,7 @@ export const SRC = {
 } as const;
 
 export const LYR = {
+  territory: 'territory-fill',
   heatSurface: 'heat-surface',
   heatHit: 'heat-hit',
   green: 'green-fill',
@@ -74,6 +76,7 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
   addCoolingIcons(map);
 
   const sources: Record<string, SourceSpecification> = {
+    [SRC.territory]: { type: 'geojson', data: EMPTY_FC },
     [SRC.heat]: { type: 'geojson', data: EMPTY_FC },
     [SRC.green]: { type: 'geojson', data: EMPTY_FC },
     [SRC.buildings]: { type: 'geojson', data: EMPTY_FC },
@@ -84,6 +87,16 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
   };
 
   const layers: LayerSpecification[] = [
+    {
+      // Whole-territory thermal-load raster (precomputed, relative colors).
+      id: LYR.territory,
+      type: 'fill',
+      source: SRC.territory,
+      paint: {
+        'fill-color': ['get', 'color'] as never,
+        'fill-opacity': 0.8,
+      },
+    },
     {
       id: LYR.green,
       type: 'fill',

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import REPO_ROOT, settings
@@ -96,7 +97,13 @@ def _dt_from_query(
 # --------------------------------------------------------------------------- #
 
 @app.get("/", tags=["meta"])
-def root() -> Dict[str, Any]:
+def root() -> Any:
+    """API discovery payload — unless the built web UI is being served, in
+    which case ``/`` must BE the UI. FastAPI would otherwise shadow the
+    StaticFiles mount here and judges hitting the deployment URL would see
+    JSON instead of the app."""
+    if _WEB_DIST is not None and (_WEB_DIST / "index.html").exists():
+        return RedirectResponse(url="/index.html", status_code=307)
     return {
         "service": settings.api_title,
         "version": settings.api_version,
@@ -354,6 +361,25 @@ def heat_point(
         raise HTTPException(422, str(exc))
 
 
+@app.get("/heatmap/territory", tags=["heatmap"])
+def heatmap_territory() -> FileResponse:
+    """Whole-territory thermal-load raster (precomputed, deterministic).
+
+    A 75 m lattice over all of Hong Kong, sea masked out, scored with the
+    same published heat physics as the live endpoints. Served as a static
+    file: the client renders every non-null cell as a filled square, giving
+    the 'specific at every location' territory raster.
+    """
+    path = REPO_ROOT / "backend" / "app" / "data" / "static" / "thermal_grid.json"
+    if not path.exists():
+        raise HTTPException(
+            404,
+            "thermal_grid.json not generated yet — run "
+            "`python -m app.tools.generate_thermal_grid` in backend/",
+        )
+    return FileResponse(path, media_type="application/json")
+
+
 @app.get("/heatmap/viewport", tags=["heatmap"])
 def heatmap_viewport(
     south: float = Query(..., ge=-90, le=90),
@@ -549,6 +575,8 @@ async def _api_prefix_alias(request, call_next):  # noqa: ANN001
 _WEB_DIST = REPO_ROOT / "web" / "dist"
 if _WEB_DIST.exists():
     app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
+else:
+    _WEB_DIST = None
 
 
 if __name__ == "__main__":  # pragma: no cover

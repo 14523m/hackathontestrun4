@@ -212,6 +212,25 @@ function engineCoolingNear(
   }));
 }
 
+/**
+ * The backend's viewport cells omit the `center` field (the offline engine
+ * includes it); the client contract declares it, so derive it from the cell
+ * polygon here — one normalisation point, every consumer safe.
+ */
+function normalizeViewport(vf: ViewportField): ViewportField {
+  return {
+    ...vf,
+    cells: vf.cells.map((c) => {
+      if (c.center) return c;
+      const poly = c.polygon;
+      if (!poly || poly.length < 3) return c;
+      const lat = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+      const lon = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+      return { ...c, center: { lat, lon } };
+    }),
+  };
+}
+
 export const api = {
   heatmap: (districtId: string, hour: number, detail: 'standard' | 'high' = 'high') =>
     withFallback<HeatMapResponse>(
@@ -240,10 +259,10 @@ export const api = {
   viewport: (b: ViewportBounds, hour: number, maxCells = 220) =>
     withFallback<ViewportField>(
       () =>
-        getJson(
+        getJson<ViewportField>(
           `${BASE}/heatmap/viewport?south=${b.south}&west=${b.west}` +
             `&north=${b.north}&east=${b.east}&hour=${hour}&maxCells=${maxCells}`,
-        ),
+        ).then(normalizeViewport),
       async () => engineViewport(b, hour, maxCells),
     ),
 

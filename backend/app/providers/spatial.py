@@ -31,6 +31,8 @@ class SpatialData:
         self.data_dir = data_dir or STATIC_DIR
         self._cache: Dict[str, dict] = {}
         self._global_buildings: Optional[List[dict]] = None
+        self._global_landuse: Optional[List[dict]] = None
+        self._index: Optional[tuple] = None
 
     # -- generic loading ------------------------------------------------- #
 
@@ -82,6 +84,51 @@ class SpatialData:
 
     # -- anywhere-in-HK queries ---------------------------------------------- #
 
+    # Grid-bucket index (lazy): cell side in degrees (~0.0025° ≈ 275 m).
+    # Turns buildings_near/land_use_near from O(all features) into O(bucket),
+    # which is what makes territory-wide batch computation feasible.
+    INDEX_CELL_DEG = 0.0025
+
+    def _bucket_key(self, lat: float, lon: float) -> Tuple[int, int]:
+        return (int(lat / self.INDEX_CELL_DEG), int(lon / self.INDEX_CELL_DEG))
+
+    def _ensure_index(self) -> None:
+        """Bucket every building & land-use feature by centroid cell (lazy)."""
+        if self._index is not None:
+            return
+        b_idx: dict = {}
+        for f in self._all_buildings():
+            ring = f["geometry"]["coordinates"][0]
+            clat = sum(p[1] for p in ring) / len(ring)
+            clon = sum(p[0] for p in ring) / len(ring)
+            b_idx.setdefault(self._bucket_key(clat, clon), []).append(f)
+        l_idx: dict = {}
+        for f in self._all_land_use():
+            ring = f["geometry"]["coordinates"][0]
+            clat = sum(p[1] for p in ring) / len(ring)
+            clon = sum(p[0] for p in ring) / len(ring)
+            l_idx.setdefault(self._bucket_key(clat, clon), []).append(f)
+        self._index = (b_idx, l_idx)
+
+    def _all_land_use(self) -> List[dict]:
+        """Concatenated land-use cells from every district file (lazy, cached)."""
+        if self._global_landuse is None:
+            feats: List[dict] = []
+            for path in sorted(self.data_dir.glob("landuse_*.geojson")):
+                district_id = path.stem.replace("landuse_", "")
+                try:
+                    fc = self._load(path.name)
+                except FileNotFoundError:
+                    continue
+                for f in fc["features"]:
+                    f = dict(f)
+                    props = dict(f.get("properties", {}))
+                    props.setdefault("districtId", district_id)
+                    f["properties"] = props
+                    feats.append(f)
+            self._global_landuse = feats
+        return self._global_landuse
+
     def _all_buildings(self) -> List[dict]:
         """Concatenated buildings from every district file (lazy, cached)."""
         if self._global_buildings is None:
@@ -106,23 +153,28 @@ class SpatialData:
     ) -> List[dict]:
         """Buildings whose centre lies within radius_m of the point.
 
-        Global index (all districts), bbox prefilter then exact centre
-        distance — cheap enough per request, no R-tree dependency.
+        Grid-bucketed index: scan only the buckets overlapping the query
+        square, exact centre-distance filter after. O(visited features).
         """
+        self._ensure_index()
+        assert self._index is not None
+        b_idx, _ = self._index
         m_per_deg_lon = M_PER_DEG_LAT * math.cos(math.radians(lat))
         r_lat = radius_m / M_PER_DEG_LAT
         r_lon = radius_m / max(m_per_deg_lon, 1.0)
+        i0, j0 = self._bucket_key(lat - r_lat, lon - r_lon)
+        i1, j1 = self._bucket_key(lat + r_lat, lon + r_lon)
         out: List[dict] = []
-        for f in self._all_buildings():
-            ring = f["geometry"]["coordinates"][0]
-            clat = sum(p[1] for p in ring) / len(ring)
-            clon = sum(p[0] for p in ring) / len(ring)
-            if abs(clat - lat) > r_lat or abs(clon - lon) > r_lon:
-                continue
-            if math.hypot(
-                (clon - lon) * m_per_deg_lon, (clat - lat) * M_PER_DEG_LAT
-            ) <= radius_m:
-                out.append(f)
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                for f in b_idx.get((i, j), ()):  # bucket scan
+                    ring = f["geometry"]["coordinates"][0]
+                    clat = sum(p[1] for p in ring) / len(ring)
+                    clon = sum(p[0] for p in ring) / len(ring)
+                    if math.hypot(
+                        (clon - lon) * m_per_deg_lon, (clat - lat) * M_PER_DEG_LAT
+                    ) <= radius_m:
+                        out.append(f)
         return out
 
     def land_use_near(
@@ -130,33 +182,30 @@ class SpatialData:
     ) -> List[dict]:
         """Land-use cells near the point across ALL districts.
 
-        Bbox prefilter over every district's landuse file; the heat engine
-        then picks the containing cell (or nearest centre) itself.
+        Grid-bucketed index (see buildings_near); the heat engine then picks
+        the containing cell (or nearest centre) itself.
         """
+        self._ensure_index()
+        assert self._index is not None
+        _, l_idx = self._index
         m_per_deg_lon = M_PER_DEG_LAT * math.cos(math.radians(lat))
         r_lat = radius_m / M_PER_DEG_LAT
         r_lon = radius_m / max(m_per_deg_lon, 1.0)
+        i0, j0 = self._bucket_key(lat - r_lat, lon - r_lon)
+        i1, j1 = self._bucket_key(lat + r_lat, lon + r_lon)
         out: List[dict] = []
-        for path in sorted(self.data_dir.glob("landuse_*.geojson")):
-            district_id = path.stem.replace("landuse_", "")
-            try:
-                fc = self._load(path.name)
-            except FileNotFoundError:
-                continue
-            for f in fc["features"]:
-                ring = f["geometry"]["coordinates"][0]
-                lats = [p[1] for p in ring]
-                lons = [p[0] for p in ring]
-                if (
-                    max(lats) < lat - r_lat or min(lats) > lat + r_lat
-                    or max(lons) < lon - r_lon or min(lons) > lon + r_lon
-                ):
-                    continue
-                f = dict(f)
-                props = dict(f.get("properties", {}))
-                props.setdefault("districtId", district_id)
-                f["properties"] = props
-                out.append(f)
+        for i in range(i0, i1 + 1):
+            for j in range(j0, j1 + 1):
+                for f in l_idx.get((i, j), ()):  # bucket scan
+                    ring = f["geometry"]["coordinates"][0]
+                    lats = [p[1] for p in ring]
+                    lons = [p[0] for p in ring]
+                    if (
+                        max(lats) < lat - r_lat or min(lats) > lat + r_lat
+                        or max(lons) < lon - r_lon or min(lons) > lon + r_lon
+                    ):
+                        continue
+                    out.append(f)
         return out
 
     def locate(self, lat: float, lon: float) -> Optional[str]:
