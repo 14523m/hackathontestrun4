@@ -275,6 +275,9 @@ function sampleFrame(
     const sTop = s00 + (s01 - s00) * tj;
     const sBottom = s10 + (s11 - s10) * tj;
     const shade = sTop + (sBottom - sTop) * ti;
-    return heat + SHADE_WEIGHT * (1 - shade);
+    // Clamp to the 0-100 scale: the blend is a ROUTING exposure signal, and
+    // an unclamped value leaked into the UI as "score 110" and into the
+    // pace model as absurd walking times.
+    return Math.min(100, heat + SHADE_WEIGHT * (1 - shade));
   };
 }

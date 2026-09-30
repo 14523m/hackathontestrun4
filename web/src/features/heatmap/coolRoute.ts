@@ -88,20 +88,18 @@ const FAST_PACE_MIN_PER_M = 12 / 1000; // 12 min/km ≈ 5 km/h
 const HEAT_ONSET = 55.0; // score where heat starts slowing walkers
 
 /**
- * Heat-aware walking pace. NO hard cap: dense-HK viewports live entirely in
- * the 85–100 band, and the previous 24 min/km cap flattened everything there
- * (so the coolest route always equalled the fastest). The curve keeps
- * discriminating across the whole range — 95 vs 88 must cost measurably
- * differently — while staying physiologically honest: a person slows, then
- * seeks shade/rest, which is exactly what a longer minute-per-km models.
+ * Heat-aware walking pace. Keeps discriminating across the full 0-100 band
+ * (the old hard cap at 24 min/km made every dense-HK street identical), but
+ * stays physiologically honest: 100 = a 3 km/h slog with pauses, and scores
+ * ARE clamped to 0-100 by the sampler so the curve can't run away.
  *
  * Calibration: 55 → 12 min/km (normal), 70 → ~14.5, 85 → ~19.5 (≈3 km/h),
- * 100 → ~32 (a deliberate slow slog with pauses). Monotone, smooth, and
- * strictly increasing everywhere, so Dijkstra always has a gradient.
+ * 100 → ~26. Monotone and strictly increasing everywhere, so Dijkstra
+ * always has a gradient, and 3 km never becomes 3 hours.
  */
 function heatPaceMinPerM(score: number): number {
-  const excess = Math.max(0, score - HEAT_ONSET);
-  const minPerKm = 12 * (1 + 0.0105 * excess ** 1.5);
+  const excess = Math.max(0, Math.min(100, score) - HEAT_ONSET);
+  const minPerKm = 12 * (1 + 0.0065 * excess ** 1.5);
   return minPerKm / 1000;
 }
 
