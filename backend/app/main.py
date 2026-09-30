@@ -11,10 +11,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-from app.config import settings
+from app.config import REPO_ROOT, settings
 from app.core.solar import timezone_fixed
 from app.core.types import HeatModelParameters, LatLon
+from app.engines.heat.anywhere import AnywhereHeatService
 from app.engines.heat.engine import HeatPredictionService
 from app.engines.routing.engine import MODE_WEIGHTS, RouteEngine
 from app.providers.citybrain import MockCityBrainProvider
@@ -53,6 +56,7 @@ heat_params = HeatModelParameters.from_settings(settings)
 heat_service = HeatPredictionService(spatial, weather, heat_params)
 route_engine = RouteEngine(spatial, heat_service)
 heat_map_service = HeatMapService(spatial, heat_service)
+anywhere_service = AnywhereHeatService(spatial, weather)
 planner_service = PlannerService(spatial, heat_service)
 cooling_provider = CoolingSpotProvider(spatial)
 crowd_provider = CrowdReportProvider(spatial)
@@ -93,7 +97,13 @@ def _dt_from_query(
 # --------------------------------------------------------------------------- #
 
 @app.get("/", tags=["meta"])
-def root() -> Dict[str, Any]:
+def root() -> Any:
+    """API discovery payload — unless the built web UI is being served, in
+    which case ``/`` must BE the UI. FastAPI would otherwise shadow the
+    StaticFiles mount here and judges hitting the deployment URL would see
+    JSON instead of the app."""
+    if _WEB_DIST is not None and (_WEB_DIST / "index.html").exists():
+        return RedirectResponse(url="/index.html", status_code=307)
     return {
         "service": settings.api_title,
         "version": settings.api_version,
@@ -221,16 +231,38 @@ def weather_current() -> Dict[str, Any]:
     }
 
 
+@app.get("/places/search", tags=["districts"])
+def places_search(
+    q: str = Query("", max_length=60),
+    limit: int = Query(8, ge=1, le=20),
+) -> List[Dict[str, Any]]:
+    """Search the HK gazetteer (MTR stations, neighbourhoods, landmarks).
+
+    SIMULATED demo accuracy; real deployment would swap in the GeoCom/CSDI
+    gazetteer through the same interface.
+    """
+    from app.providers.gazetteer import search_places
+
+    return search_places(q, limit)
+
+
 @app.get("/cooling-spots", tags=["cooling"])
 def cooling_spots(
     districtId: Optional[str] = None,
     lat: Optional[float] = None,
     lon: Optional[float] = None,
     limit: int = 5,
+    maxDistanceMeters: Optional[float] = Query(None, gt=0),
 ) -> List[Dict[str, Any]]:
+    """Cooling spots; with lat/lon returns nearest-first, optionally bounded
+    by ``maxDistanceMeters`` (used by the web inspect panel's 500 m search)."""
     if lat is not None and lon is not None:
-        return cooling_provider.nearest(lat, lon, limit=limit,
-                                        district_id=districtId)
+        spots = cooling_provider.nearest(lat, lon, limit=limit,
+                                         district_id=districtId)
+        if maxDistanceMeters is not None:
+            spots = [s for s in spots
+                     if s["distanceMeters"] <= maxDistanceMeters]
+        return spots
     return cooling_provider.list(districtId)
 
 
@@ -278,8 +310,13 @@ def heatmap(
     districtId: str = Query("central-western"),
     date: Optional[str] = None,
     hour: Optional[float] = Query(None, ge=0, le=23.99),
+    detail: str = Query("standard", pattern="^(standard|high)$"),
 ) -> Dict[str, Any]:
-    """Time-dependent heat layer. Pass ?hour=9/12/15/18 to see it change."""
+    """Time-dependent heat layer.
+
+    ``detail=high`` subdivides each land-use cell 2x2 (same heat model per
+    sub-cell) for a smoother surface on the web heatmap.
+    """
     dt = _dt_from_query(date, hour)
     if dt.hour < 5 or dt.hour >= 22:
         return {
@@ -292,9 +329,80 @@ def heatmap(
             "legend": {},
             "note": "Night hours: solar exposure model inactive (demo scope).",
         }
-    layer = heat_map_service.build(districtId, dt)
+    layer = heat_map_service.build(
+        districtId, dt, subdivisions=2 if detail == "high" else 1
+    )
     layer["dataMode"] = settings.data_mode
     return layer
+
+
+@app.get("/heat/point", tags=["heatmap"])
+def heat_point(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    date: Optional[str] = None,
+    hour: Optional[float] = Query(None, ge=0, le=23.99),
+) -> Dict[str, Any]:
+    """Physics-based heat prediction at ANY coordinate in Hong Kong.
+
+    No districtId needed: building shadows + sky-view factor from the global
+    building index, land-use sampling from the nearest cell, HKO-anchored
+    weather, published thermal equations (Steadman AT, Stull wet-bulb, ABM
+    WBGT, Thorsson MRT). The click-inspect payload for the free-pan web map.
+    """
+    from app.core.geo import in_hong_kong
+
+    if not in_hong_kong(lat, lon):
+        raise HTTPException(422, "coordinate outside the Hong Kong bounding region")
+    dt = _dt_from_query(date, hour)
+    try:
+        return anywhere_service.predict_point(lat, lon, dt)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@app.get("/heatmap/territory", tags=["heatmap"])
+def heatmap_territory() -> FileResponse:
+    """Whole-territory thermal-load raster (precomputed, deterministic).
+
+    A 75 m lattice over all of Hong Kong, sea masked out, scored with the
+    same published heat physics as the live endpoints. Served as a static
+    file: the client renders every non-null cell as a filled square, giving
+    the 'specific at every location' territory raster.
+    """
+    path = REPO_ROOT / "backend" / "app" / "data" / "static" / "thermal_grid.json"
+    if not path.exists():
+        raise HTTPException(
+            404,
+            "thermal_grid.json not generated yet — run "
+            "`python -m app.tools.generate_thermal_grid` in backend/",
+        )
+    return FileResponse(path, media_type="application/json")
+
+
+@app.get("/heatmap/viewport", tags=["heatmap"])
+def heatmap_viewport(
+    south: float = Query(..., ge=-90, le=90),
+    west: float = Query(..., ge=-180, le=180),
+    north: float = Query(..., ge=-90, le=90),
+    east: float = Query(..., ge=-180, le=180),
+    date: Optional[str] = None,
+    hour: Optional[float] = Query(None, ge=0, le=23.99),
+    maxCells: int = Query(220, ge=20, le=400),
+) -> Dict[str, Any]:
+    """Heat field for a map viewport - anywhere in Hong Kong, free pan/zoom.
+
+    Grid resolution adapts to the viewport size so every returned cell is a
+    real physics evaluation at that coordinate (max ``maxCells`` of them),
+    never interpolated decoration.
+    """
+    dt = _dt_from_query(date, hour)
+    try:
+        return anywhere_service.viewport_field(
+            south, west, north, east, dt, max_cells=maxCells
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 # --------------------------------------------------------------------------- #
@@ -439,6 +547,36 @@ def equity(districtId: str = Query("central-western"),
             "vulnerability data, used only where legally/ethically appropriate."
         ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Web UI (judge-facing): when web/dist exists (npm run build in web/), serve
+# the built SPA from this same origin - ONE server for API + UI on :8000.
+# API routes above are registered first, so they take precedence.
+# --------------------------------------------------------------------------- #
+
+
+@app.middleware("http")
+async def _api_prefix_alias(request, call_next):  # noqa: ANN001
+    """Accept /api/* as an alias of the root routes.
+
+    The web client calls /api/... (the same convention as the Vite dev
+    proxy, which rewrites /api away). When FastAPI serves the built SPA
+    itself there is no proxy, so the prefix is stripped here instead of
+    duplicating every route - otherwise live calls 404 and the UI silently
+    falls back to offline mode.
+    """
+    path = request.scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        request.scope["path"] = path[4:] or "/"
+    return await call_next(request)
+
+
+_WEB_DIST = REPO_ROOT / "web" / "dist"
+if _WEB_DIST.exists():
+    app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
+else:
+    _WEB_DIST = None
 
 
 if __name__ == "__main__":  # pragma: no cover

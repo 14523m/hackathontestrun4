@@ -22,48 +22,116 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 M_PER_DEG_LAT = 111_320.0
 
-# Roughly [south, west, north, east] of each demo district (WGS84).
+# Roughly [south, west, north, east] of each district (WGS84).
+# All 18 HK districts plus the conceptual Northern Metropolis scenario.
+# Bboxes cover the main built-up part of each district so the demo map
+# fills the viewport (not the whole administrative area).
 DISTRICT_BBOXES = {
     "central-western": (22.278, 114.128, 22.292, 114.148),
-    "kowloon-yau-tsim": (22.296, 114.164, 22.310, 114.180),
+    "wan-chai": (22.271, 114.165, 22.283, 114.182),
+    "eastern": (22.280, 114.200, 22.295, 114.232),
+    "southern": (22.210, 114.150, 22.265, 114.265),
+    "kowloon-yau-tsim": (22.296, 114.164, 22.325, 114.180),  # reaches Mong Kok
+    "kowloon-sham-shui-po": (22.328, 114.148, 22.342, 114.168),
+    "kowloon-kowloon-city": (22.318, 114.180, 22.336, 114.202),
+    "kowloon-wong-tai-sin": (22.336, 114.183, 22.354, 114.212),
+    "kowloon-kwun-tong": (22.302, 114.215, 22.326, 114.240),
+    "kowloon-kwai-tsing": (22.352, 114.098, 22.372, 114.135),
+    "kowloon-tsuen-wan": (22.360, 114.108, 22.382, 114.142),
+    "nt-tuen-mun": (22.380, 113.952, 22.415, 113.990),
+    "nt-yuen-long": (22.432, 114.018, 22.458, 114.048),
+    "nt-tai-po": (22.438, 114.155, 22.462, 114.190),
+    "nt-sha-tin": (22.368, 114.178, 22.398, 114.212),
+    "nt-sai-kung": (22.305, 114.250, 22.396, 114.298),  # includes Tseung Kwan O
+    "nt-north": (22.490, 114.128, 22.532, 114.168),
+    "nt-islands": (22.255, 113.915, 22.315, 114.055),  # Lantau: airport to Disneyland
     "northern-metropolis": (22.505, 114.120, 22.525, 114.150),
 }
 
-DISTRICT_META = [
-    {
-        "id": "central-western",
-        "name": "Central & Western",
-        "nameZh": "中西區",
-        "kind": "existing",
-        "description": (
-            "Dense historic district on Hong Kong Island with steep terrain, "
-            "narrow streets and limited park space. Simulated district used for "
-            "citizen cool-route and heat-map demonstrations."
-        ),
-    },
-    {
-        "id": "kowloon-yau-tsim",
-        "name": "Yau Tsim Mong (Kowloon)",
-        "nameZh": "油尖旺區",
-        "kind": "existing",
-        "description": (
-            "Extremely dense Kowloon urban core. Simulated district used for "
-            "street-canyon heat demonstrations."
-        ),
-    },
-    {
-        "id": "northern-metropolis",
-        "name": "Northern Metropolis (Conceptual District)",
-        "nameZh": "北部都會區（概念情境）",
-        "kind": "conceptual",
-        "description": (
-            "A CONCEPTUAL / SIMULATED new-district scenario inspired by the "
-            "Northern Metropolis development area. This is NOT an official plan, "
-            "NOT a prediction about the real Northern Metropolis, and all values "
-            "are simulated for demonstration of planning-stage heat assessment."
-        ),
-    },
-]
+# Urban character drives height mix / green share / paved share so every
+# district feels different without per-district if/elif scattered around.
+URBAN_CHARACTER = {
+    "central-western": "urban-core",
+    "wan-chai": "urban-core",
+    "eastern": "urban-core",
+    "southern": "urban",
+    "kowloon-yau-tsim": "urban-core",
+    "kowloon-sham-shui-po": "urban-core",
+    "kowloon-kowloon-city": "urban-core",
+    "kowloon-wong-tai-sin": "urban",
+    "kowloon-kwun-tong": "urban-core",
+    "kowloon-kwai-tsing": "urban",
+    "kowloon-tsuen-wan": "urban",
+    "nt-tuen-mun": "new-town",
+    "nt-yuen-long": "new-town",
+    "nt-tai-po": "new-town",
+    "nt-sha-tin": "new-town",
+    "nt-sai-kung": "new-town",
+    "nt-north": "new-town",
+    "nt-islands": "new-town",
+    "northern-metropolis": "conceptual",
+}
+
+_CHARACTER_LABELS = {
+    "urban-core": "dense urban core with towers, deep street canyons and little open space",
+    "urban": "mixed urban fabric of mid-rise blocks, podiums and neighbourhood parks",
+    "new-town": "planned new town with estate towers between green slopes",
+    "conceptual": "a CONCEPTUAL new-district scenario for planning-stage heat assessment",
+}
+
+_DISTRICT_NAMES = {
+    "central-western": ("Central & Western", "中西區"),
+    "wan-chai": ("Wan Chai", "灣仔區"),
+    "eastern": ("Eastern", "東區"),
+    "southern": ("Southern", "南區"),
+    "kowloon-yau-tsim": ("Yau Tsim Mong", "油尖旺區"),
+    "kowloon-sham-shui-po": ("Sham Shui Po", "深水埗區"),
+    "kowloon-kowloon-city": ("Kowloon City", "九龍城區"),
+    "kowloon-wong-tai-sin": ("Wong Tai Sin", "黃大仙區"),
+    "kowloon-kwun-tong": ("Kwun Tong", "觀塘區"),
+    "kowloon-kwai-tsing": ("Kwai Tsing", "葵青區"),
+    "kowloon-tsuen-wan": ("Tsuen Wan", "荃灣區"),
+    "nt-tuen-mun": ("Tuen Mun", "屯門區"),
+    "nt-yuen-long": ("Yuen Long", "元朗區"),
+    "nt-tai-po": ("Tai Po", "大埔區"),
+    "nt-sha-tin": ("Sha Tin", "沙田區"),
+    "nt-sai-kung": ("Sai Kung", "西貢區"),
+    "nt-north": ("North", "北區"),
+    "nt-islands": ("Islands", "離島區"),
+    "northern-metropolis": ("Northern Metropolis (Conceptual)", "北部都會區（概念情境）"),
+}
+
+
+def _district_meta() -> list[dict]:
+    meta = []
+    for district_id in DISTRICT_BBOXES:
+        name, name_zh = _DISTRICT_NAMES[district_id]
+        character = URBAN_CHARACTER[district_id]
+        kind = "conceptual" if character == "conceptual" else "existing"
+        if kind == "conceptual":
+            description = (
+                "A CONCEPTUAL / SIMULATED new-district scenario inspired by the "
+                "Northern Metropolis development area. This is NOT an official "
+                "plan and NOT a prediction about the real Northern Metropolis; "
+                "all values are simulated for demonstration."
+            )
+        else:
+            description = (
+                f"Simulated {character} district ({_CHARACTER_LABELS[character]}). "
+                "Geographically anchored to the real district; all heat-relevant "
+                "values are simulated for demonstration."
+            )
+        meta.append({
+            "id": district_id,
+            "name": name,
+            "nameZh": name_zh,
+            "kind": kind,
+            "description": description,
+        })
+    return meta
+
+
+DISTRICT_META = _district_meta()
 
 
 def _hash_floats(*parts: str) -> list[float]:
@@ -217,21 +285,29 @@ def generate_buildings(district_id: str) -> dict:
             lat1 = s + (n - s) * (i + 0.94) / (ny - 1)
             lon0 = w + (e - w) * (j + 0.06) / (nx - 1)
             lon1 = w + (e - w) * (j + 0.94) / (nx - 1)
-            # Height mix by district character: podium / mid-rise / tower.
-            if district_id == "kowloon-yau-tsim":
+            # Height mix by urban character (profile): podium / mid / tower.
+            ch = URBAN_CHARACTER.get(district_id, "urban")
+            if ch == "urban-core":
                 if r[1] < 0.15:
                     height, floors = 12 + r[2] * 10, 4 + int(r[3] * 3)
                 elif r[1] < 0.55:
                     height, floors = 45 + r[2] * 35, 14 + int(r[3] * 10)
                 else:
                     height, floors = 95 + r[2] * 60, 28 + int(r[3] * 18)
-            elif district_id == "central-western":
-                if r[1] < 0.25:
+            elif ch == "urban":
+                if r[1] < 0.3:
                     height, floors = 10 + r[2] * 12, 3 + int(r[3] * 4)
-                elif r[1] < 0.65:
-                    height, floors = 40 + r[2] * 35, 12 + int(r[3] * 10)
+                elif r[1] < 0.75:
+                    height, floors = 35 + r[2] * 30, 11 + int(r[3] * 9)
                 else:
-                    height, floors = 90 + r[2] * 60, 26 + int(r[3] * 18)
+                    height, floors = 70 + r[2] * 45, 21 + int(r[3] * 12)
+            elif ch == "new-town":
+                if r[1] < 0.45:
+                    height, floors = 15 + r[2] * 20, 5 + int(r[3] * 6)
+                elif r[1] < 0.9:
+                    height, floors = 55 + r[2] * 35, 17 + int(r[3] * 11)
+                else:
+                    height, floors = 90 + r[2] * 40, 27 + int(r[3] * 12)
             else:  # conceptual NM: low/mid with a compact tower cluster
                 if r[5] > 0.75:
                     height, floors = 60 + r[2] * 60, 18 + int(r[3] * 18)
@@ -275,6 +351,32 @@ PARK_RECTS = {
     "northern-metropolis": [
         ((0.30, 0.52), (0.30, 0.56)),   # conceptual central park
     ],
+    "wan-chai": [((0.15, 0.40), (0.10, 0.38))],
+    "eastern": [((0.10, 0.35), (0.55, 0.85))],
+    "southern": [((0.35, 0.62), (0.30, 0.62))],
+    "kowloon-sham-shui-po": [((0.62, 0.86), (0.12, 0.42))],
+    "kowloon-kowloon-city": [((0.12, 0.36), (0.55, 0.85))],
+    "kowloon-wong-tai-sin": [((0.55, 0.82), (0.20, 0.52))],
+    "kowloon-kwun-tong": [((0.10, 0.32), (0.60, 0.88))],
+    "kowloon-kwai-tsing": [((0.55, 0.80), (0.30, 0.60))],
+    "kowloon-tsuen-wan": [((0.12, 0.38), (0.15, 0.45))],
+    "nt-tuen-mun": [((0.35, 0.60), (0.35, 0.65))],
+    "nt-yuen-long": [((0.12, 0.36), (0.35, 0.65))],
+    "nt-tai-po": [((0.35, 0.60), (0.20, 0.50))],
+    "nt-sha-tin": [((0.10, 0.34), (0.40, 0.70))],
+    "nt-sai-kung": [((0.35, 0.62), (0.25, 0.55))],
+    "nt-north": [((0.35, 0.60), (0.35, 0.65))],
+    "nt-islands": [((0.30, 0.55), (0.30, 0.60))],
+}
+
+# Vegetation/paved baselines per urban character (deterministic variation
+# from the cell hash is applied on top).
+_LANDUSE_PROFILE = {
+    # character: (green_base, green_span, green_cap, paved_base, paved_span)
+    "urban-core": (0.06, 0.12, 0.35, 0.55, 0.30),
+    "urban": (0.10, 0.18, 0.45, 0.48, 0.30),
+    "new-town": (0.20, 0.25, 0.60, 0.35, 0.30),
+    "conceptual": (0.22, 0.30, 0.65, 0.30, 0.30),
 }
 
 
@@ -290,6 +392,8 @@ def generate_land_use(district_id: str, step: float = 0.0016) -> dict:
         (s + (n - s) * a0, s + (n - s) * a1, w + (e - w) * o0, w + (e - w) * o1)
         for (a0, a1), (o0, o1) in PARK_RECTS.get(district_id, [])
     ]
+    ch = URBAN_CHARACTER.get(district_id, "urban")
+    g_base, g_span, g_cap, p_base, p_span = _LANDUSE_PROFILE[ch]
     features = []
     lat = s
     row = 0
@@ -299,15 +403,8 @@ def generate_land_use(district_id: str, step: float = 0.0016) -> dict:
         while lon < e:
             r = _hash_floats(seed, f"{row}:{col}")
             in_corridor = district_id != "northern-metropolis" and corridor_lo <= lat <= corridor_hi
-            if district_id == "kowloon-yau-tsim":
-                green = max(0.0, min(0.35, 0.06 + r[0] * 0.12))
-                paved = 0.55 + r[1] * 0.3
-            elif district_id == "central-western":
-                green = max(0.0, min(0.5, 0.10 + r[0] * 0.20))
-                paved = 0.45 + r[1] * 0.3
-            else:
-                green = max(0.0, min(0.65, 0.22 + r[0] * 0.30))
-                paved = 0.30 + r[1] * 0.3
+            green = max(0.0, min(g_cap, g_base + r[0] * g_span))
+            paved = p_base + r[1] * p_span
             if in_corridor:
                 paved = min(0.95, paved + 0.25)
                 green *= 0.3
@@ -376,10 +473,30 @@ COOLING_SPOTS = {
 }
 
 
+_AUTO_SPOT_TYPES = [
+    ("Public Library", "library", 3, "08:00-21:00", True, 500),
+    ("Sports Centre", "sports_centre", 3, "06:30-22:30", True, 700),
+    ("Community Hall", "community_centre", 2, "09:00-21:00", True, 250),
+    ("District Park", "park", 2, "24 hours", True, 350),
+    ("MTR Station concourse", "mtr_station", 2, "05:30-01:30", True, 1200),
+]
+
+
 def generate_cooling_spots() -> dict:
     features = []
-    for district_id, spots in COOLING_SPOTS.items():
+    for district_id in DISTRICT_BBOXES:
         s, w, n, e = _bbox(district_id)
+        curated = COOLING_SPOTS.get(district_id)
+        if curated is None:
+            # Auto-derive plausible district facilities (SIMULATED names) so
+            # every district has cooling infrastructure in the demo.
+            name_prefix = _DISTRICT_NAMES[district_id][0]
+            spots = [
+                (f"{name_prefix} {n}", t, lvl, hrs, acc, cap)
+                for n, t, lvl, hrs, acc, cap in _AUTO_SPOT_TYPES
+            ]
+        else:
+            spots = curated
         for i, (name, typ, level, hours, access, cap) in enumerate(spots):
             r = _hash_floats(f"spot:{district_id}", str(i))
             lat = s + (n - s) * (0.15 + 0.7 * r[0])
