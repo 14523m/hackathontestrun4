@@ -764,7 +764,7 @@ export default function HeatMapPage() {
           <div className="score-pill" style={{ marginBottom: 12 }}>
             <span className="num">{Math.round(mean)}</span>
             <span className="cap">
-              how hot this view is on average at {fmtHour(hour)}
+              {heatBand(mean).label} at {fmtHour(hour)} — {heatBand(mean).hint}
               <br />
               {field?.cells.filter((c) => c.heatScore >= 65).length ?? 0} hot
               spots · {field?.cells.length ?? 0} areas checked
@@ -844,7 +844,7 @@ function RouteCard({
         </div>
         <div className="route-row">
           <span>Heat along the way (average)</span>
-          <span>{Math.round(chosen.meanHeat)}</span>
+          <span>{Math.round(chosen.meanHeat)} — {heatBand(chosen.meanHeat).label}</span>
         </div>
       </div>
 
@@ -975,4 +975,17 @@ function fmtHour(h: number): string {
   const hh = Math.floor(h);
   const mm = Math.round((h - hh) * 60);
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+/**
+ * Plain-language band for a 0-100 heat score — the number alone means
+ * nothing until you've used the app for weeks; the band + hint are
+ * readable on first sight (UV-index style). Anchors match the legend.
+ */
+export function heatBand(score: number): { label: string; hint: string } {
+  if (score < 45) return { label: 'Pleasant', hint: 'no heat precautions needed' };
+  if (score < 60) return { label: 'Warm', hint: 'fine for most people' };
+  if (score < 72) return { label: 'Hot', hint: 'water + shade breaks' };
+  if (score < 85) return { label: 'Very hot', hint: 'limit strenuous walks' };
+  return { label: 'Dangerous', hint: 'avoid or go indoors/cool route' };
 }

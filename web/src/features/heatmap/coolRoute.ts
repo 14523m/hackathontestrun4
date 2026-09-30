@@ -83,14 +83,22 @@ export interface RoutePlan {
 
 const FAST_PACE_MIN_PER_M = 12 / 1000; // 12 min/km ≈ 5 km/h
 const HEAT_ONSET = 55.0; // score where heat starts slowing walkers
-const PACE_CAP_MIN_PER_KM = 24; // hottest slog ≈ 2.5 km/h
 
+/**
+ * Heat-aware walking pace. NO hard cap: dense-HK viewports live entirely in
+ * the 85–100 band, and the previous 24 min/km cap flattened everything there
+ * (so the coolest route always equalled the fastest). The curve keeps
+ * discriminating across the whole range — 95 vs 88 must cost measurably
+ * differently — while staying physiologically honest: a person slows, then
+ * seeks shade/rest, which is exactly what a longer minute-per-km models.
+ *
+ * Calibration: 55 → 12 min/km (normal), 70 → ~14.5, 85 → ~19.5 (≈3 km/h),
+ * 100 → ~32 (a deliberate slow slog with pauses). Monotone, smooth, and
+ * strictly increasing everywhere, so Dijkstra always has a gradient.
+ */
 function heatPaceMinPerM(score: number): number {
   const excess = Math.max(0, score - HEAT_ONSET);
-  const minPerKm = Math.min(
-    PACE_CAP_MIN_PER_KM,
-    12 * (1 + 0.008 * excess ** 1.5),
-  );
+  const minPerKm = 12 * (1 + 0.0105 * excess ** 1.5);
   return minPerKm / 1000;
 }
 
@@ -116,6 +124,7 @@ interface Node {
   lat: number;
   lon: number;
   score: number;
+  shade?: number;
 }
 
 function buildGrid(cells: HeatCell[]): Grid | null {
@@ -152,9 +161,14 @@ function buildGrid(cells: HeatCell[]): Grid | null {
   const cellM = Math.hypot(dLat * M_PER_DEG_LAT, dLon * M_PER_DEG_LAT * Math.cos((latMid * Math.PI) / 180));
   const mPerLon = M_PER_DEG_LAT * Math.cos((latMid * Math.PI) / 180);
 
-  const nodes: (Node | null)[] = table.map((c) =>
-    c ? { i: 0, j: 0, lat: c.center.lat, lon: c.center.lon, score: c.heatScore } : null,
-  );
+  const nodes: (Node | null)[] = table.map((c) => {
+    if (!c) return null;
+    // Backend payloads omit `center`; the polygon mean IS its definition.
+    const poly = c.polygon;
+    const lat = poly.reduce((s, p) => s + p[1], 0) / poly.length;
+    const lon = poly.reduce((s, p) => s + p[0], 0) / poly.length;
+    return { i: 0, j: 0, lat, lon, score: c.heatScore, shade: c.shadeScore };
+  });
   for (let k = 0; k < nodes.length; k++) {
     const n = nodes[k];
     if (n) {

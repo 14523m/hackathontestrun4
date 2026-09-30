@@ -28,6 +28,10 @@ export interface FieldFrame {
   dLon: number;
   /** Row-major [rows x cols] heat scores; NaN where no data. */
   values: Float64Array;
+  /** Row-major shade (0-1); NaN where no data. Optional: routes blend it in
+   *  so block-level shade differences (0.0–0.94 in dense HK) steer the path
+   *  even when the composite heat score is nearly flat. */
+  shade?: Float64Array;
 }
 
 /** Cell id schemes: backend "vp-i-j", offline engine "eng-i-j". */
@@ -70,11 +74,13 @@ export function buildFieldFrame(cells: HeatCell[]): FieldFrame | null {
   if (rows * cols < parsed.length) return null; // inconsistent ids
 
   const values = new Float64Array(rows * cols).fill(NaN);
+  const shade = new Float64Array(rows * cols).fill(NaN);
   let latSum = 0;
   let lonSum = 0;
   const placed: { i: number; j: number; lat: number; lon: number }[] = [];
   for (const { c, i, j } of parsed) {
     values[i * cols + j] = c.heatScore;
+    if (typeof c.shadeScore === 'number') shade[i * cols + j] = c.shadeScore;
     const centre = centreOf(c);
     if (!centre) continue; // no position: value stays, excluded from geometry
     placed.push({ i, j, lat: centre.lat, lon: centre.lon });
@@ -124,6 +130,7 @@ export function buildFieldFrame(cells: HeatCell[]): FieldFrame | null {
     dLat: hLat / mPerLat,
     dLon: hLon / mPerLon,
     values,
+    shade,
   };
 }
 
@@ -175,9 +182,20 @@ export function interpolateHeat(
  * cover, so a street just past the last grid row still gets the edge value),
  * and null beyond — no invented data far from the field.
  */
+/**
+ * Continuous heat sampler. When the frame carries shade data, the returned
+ * value is a ROUTING-EXPLOSURE blend: composite heat score plus a shade
+ * penalty that survives inside dense districts (where the 0-100 composite
+ * is nearly flat but shade varies 0.0-0.94 block to block). K = 10 points
+ * of full-shade loss ≈ one pace-band step, enough to steer a route to the
+ * shaded side of a street without inventing imaginary temperature.
+ */
+const SHADE_WEIGHT = 10;
+
 export function makeContinuousSampler(
   frame: FieldFrame,
 ): (lat: number, lon: number) => number | null {
+  const hasShade = frame.shade !== undefined;
   return (lat, lon) => {
     const fiRaw = (lat - frame.south) / frame.dLat;
     const fjRaw = (lon - frame.west) / frame.dLon;
@@ -213,6 +231,19 @@ export function makeContinuousSampler(
     }
     const top = v00 + (v01 - v00) * tj;
     const bottom = v10 + (v11 - v10) * tj;
-    return top + (bottom - top) * ti;
+    const heat = top + (bottom - top) * ti;
+    if (!hasShade) return heat;
+
+    const s00 = (frame.shade as Float64Array)[i0 * frame.cols + j0];
+    const s01 = (frame.shade as Float64Array)[i0 * frame.cols + j1];
+    const s10 = (frame.shade as Float64Array)[i1 * frame.cols + j0];
+    const s11 = (frame.shade as Float64Array)[i1 * frame.cols + j1];
+    if (Number.isNaN(s00) || Number.isNaN(s01) || Number.isNaN(s10) || Number.isNaN(s11)) {
+      return heat; // shade data missing here: heat only
+    }
+    const sTop = s00 + (s01 - s00) * tj;
+    const sBottom = s10 + (s11 - s10) * tj;
+    const shade = sTop + (sBottom - sTop) * ti;
+    return heat + SHADE_WEIGHT * (1 - shade);
   };
 }
