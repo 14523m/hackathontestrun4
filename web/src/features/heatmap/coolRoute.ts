@@ -29,6 +29,7 @@ import type { StreetNet } from './osmStreets';
 import { osrmRoutes, summarizeLine } from './routeOsrm';
 import type { HeatSampler } from './osmStreets';
 import type { TerritoryGrid } from './territoryRaster';
+import { buildFieldFrame, makeShadeSampler } from './heatField';
 
 /** Optional anywhere-sampler: the whole-territory raster (150 m lattice). */
 export interface TerritorySampler {
@@ -68,6 +69,8 @@ export interface RouteSummary {
   minutesFastPace: number; // 12 min/km reference minutes
   meanHeat: number;
   maxHeat: number;
+  /** metres walked on shaded street, for the "x% shaded" stat. */
+  shadedM?: number;
   /** Metres travelled on ferry legs (OSRM routes may include one). */
   ferryM?: number;
   /** Bilingual turn-by-turn street names (OSRM), metres along the route. */
@@ -300,6 +303,7 @@ function summarize(
   let fastMin = 0;
   let scoreSum = 0;
   let scoreMax = 0;
+  let shadedM = 0;
   for (let k = 0; k < pts.length; k++) {
     const score = scoreAt(pts[k]);
     scoreSum += score;
@@ -314,6 +318,11 @@ function summarize(
       distM += d;
       hotMin += d * heatPaceMinPerM((score + scoreAt(q)) / 2);
       fastMin += d * FAST_PACE_MIN_PER_M;
+      const s1 = nearestNode(grid, pts[k])?.shade;
+      const s0 = nearestNode(grid, q)?.shade;
+      if (typeof s1 === 'number' && typeof s0 === 'number' && (s1 + s0) / 2 >= 0.5) {
+        shadedM += d;
+      }
     }
   }
   return {
@@ -323,6 +332,7 @@ function summarize(
     minutesFastPace: fastMin,
     meanHeat: pts.length ? scoreSum / pts.length : 0,
     maxHeat: scoreMax,
+    shadedM: shadedM > 0 ? shadedM : undefined,
   };
 }
 
@@ -353,6 +363,10 @@ export async function planRouteAccurate(
     : null;
   const sampler: HeatSampler = (lat, lon) =>
     viewportSampler?.(lat, lon) ?? terrSampler?.(lat, lon) ?? null;
+  // Pure-shade sampler for the "x% shaded" stat (viewport only — the
+  // territory raster carries no shade).
+  const frame = buildFieldFrame(cells);
+  const shadeSampler = frame ? makeShadeSampler(frame) : null;
 
   const candidates: RouteSummary[] = [];
 
@@ -363,6 +377,7 @@ export async function planRouteAccurate(
       for (const r of routes) {
         const summary = summarizeLine(
           r.line, sampler, heatPaceMinPerM, FAST_PACE_MIN_PER_M, r.distanceM, r.ferryM,
+          shadeSampler,
         );
         // Carry the bilingual turn-by-turn (street names only) for the card.
         summary.steps = r.steps

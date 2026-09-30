@@ -195,6 +195,24 @@ const SHADE_WEIGHT = 10;
 export function makeContinuousSampler(
   frame: FieldFrame,
 ): (lat: number, lon: number) => number | null {
+  return sampleFrame(frame, false);
+}
+
+/**
+ * Pure-shade sampler (0-1) for stats like "62% of this route is shaded".
+ * Returns null where there is no shade data.
+ */
+export function makeShadeSampler(
+  frame: FieldFrame,
+): (lat: number, lon: number) => number | null {
+  if (frame.shade === undefined) return () => null;
+  return sampleFrame(frame, true);
+}
+
+function sampleFrame(
+  frame: FieldFrame,
+  shadeOnly: boolean,
+): (lat: number, lon: number) => number | null {
   const hasShade = frame.shade !== undefined;
   return (lat, lon) => {
     const fiRaw = (lat - frame.south) / frame.dLat;
@@ -222,6 +240,19 @@ export function makeContinuousSampler(
     const v01 = frame.values[i0 * frame.cols + j1];
     const v10 = frame.values[i1 * frame.cols + j0];
     const v11 = frame.values[i1 * frame.cols + j1];
+
+    if (shadeOnly) {
+      const t00 = (frame.shade as Float64Array)[i0 * frame.cols + j0];
+      const t01 = (frame.shade as Float64Array)[i0 * frame.cols + j1];
+      const t10 = (frame.shade as Float64Array)[i1 * frame.cols + j0];
+      const t11 = (frame.shade as Float64Array)[i1 * frame.cols + j1];
+      if (Number.isNaN(t00) || Number.isNaN(t01) || Number.isNaN(t10) || Number.isNaN(t11)) {
+        return null;
+      }
+      const tTop = t00 + (t01 - t00) * tj;
+      const tBottom = t10 + (t11 - t10) * tj;
+      return tTop + (tBottom - tTop) * ti;
+    }
 
     const anyNaN =
       Number.isNaN(v00) || Number.isNaN(v01) || Number.isNaN(v10) || Number.isNaN(v11);

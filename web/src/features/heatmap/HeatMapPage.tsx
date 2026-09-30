@@ -87,6 +87,8 @@ interface RouteUi {
   end: RoutePoint;
   plan: RoutePlan;
   balance: number;
+  /** Hour of the heat field the route was planned against. */
+  hour?: number;
 }
 
 export default function HeatMapPage() {
@@ -406,7 +408,7 @@ export default function HeatMapPage() {
           const token = ++routeToken.current;
           void planRouteAccurate(field.cells, pt, pendingEnd, route?.balance ?? 1, streetsRef.current, territoryRef.current).then((plan) => {
             if (!plan || token !== routeToken.current) return;
-            setRoute({ start: pt, end: pendingEnd, plan, balance: route?.balance ?? 1 });
+            setRoute({ start: pt, end: pendingEnd, plan, balance: route?.balance ?? 1, hour });
             setPickMode('idle');
             setPendingEnd(null);
           });
@@ -423,7 +425,7 @@ export default function HeatMapPage() {
         const token = ++routeToken.current;
         void planRouteAccurate(field.cells, pendingStart, pt, 1, streetsRef.current, territoryRef.current).then((plan) => {
           if (!plan || token !== routeToken.current) return;
-          setRoute({ start: pendingStart, end: pt, plan, balance: 1 });
+          setRoute({ start: pendingStart, end: pt, plan, balance: 1, hour });
           setPickMode('idle');
           setPendingEnd(null);
         });
@@ -504,6 +506,7 @@ export default function HeatMapPage() {
             end,
             plan,
             balance: 1,
+            hour,
           });
         }
         setTransitOptions(transit?.itineraries ?? []);
@@ -843,6 +846,18 @@ function RouteCard({
           <span>{mins(fastest.minutesHotPace)}</span>
         </div>
         <div className="route-row">
+          <span>Feels like, in the shade / sun</span>
+          <span>
+            {tempRange(chosen.meanHeat, route.hour)}
+          </span>
+        </div>
+        {chosen.shadedM !== undefined && chosen.distanceM > 0 && (
+          <div className="route-row">
+            <span>Shaded</span>
+            <span>{Math.round((chosen.shadedM / chosen.distanceM) * 100)}% of the way</span>
+          </div>
+        )}
+        <div className="route-row">
           <span>Heat along the way (average)</span>
           <span>{Math.round(chosen.meanHeat)} — {heatBand(chosen.meanHeat).label}</span>
         </div>
@@ -988,4 +1003,18 @@ export function heatBand(score: number): { label: string; hint: string } {
   if (score < 72) return { label: 'Hot', hint: 'water + shade breaks' };
   if (score < 85) return { label: 'Very hot', hint: 'limit strenuous walks' };
   return { label: 'Dangerous', hint: 'avoid or go indoors/cool route' };
+}
+
+/**
+ * Score → feels-like °C range, using the model's OWN anchor: the score is
+ * Steadman's shade apparent temperature mapped linearly ((AT−24)/21×100),
+ * so the inverse is exact, not an approximation. Shows shade→sun band so
+ * a walker knows both bounds of what they'll feel.
+ */
+export function tempRange(meanScore: number, hour?: number): string {
+  const atShade = (meanScore / 100) * 21 + 24;
+  // Sun adds typically 8–20°C of radiant load in daytime HK; band it.
+  const daytime = hour === undefined || (hour >= 6.5 && hour <= 18);
+  const sunAdd = daytime ? 12 : 2;
+  return `${atShade.toFixed(0)}°C shade · ${(atShade + sunAdd).toFixed(0)}°C sun`;
 }

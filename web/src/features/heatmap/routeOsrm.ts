@@ -148,6 +148,7 @@ export function summarizeLine(
   fastPaceMinPerM: number,
   distanceM?: number,
   ferryM?: number,
+  shadeSampler?: ((lat: number, lon: number) => number | null) | null,
 ): RouteSummary {
   const scoreAt = (lat: number, lon: number): number => sampler?.(lat, lon) ?? 55;
   const FERRY_MIN_PER_M = (7.5 + 2.5) / 1000; // ~8 km/h cruise + avg wait
@@ -220,6 +221,7 @@ export function summarizeLine(
       }
     }
   }
+  let shadedM = 0;
   for (let k = 0; k < line.length; k++) {
     const [lon, lat] = line[k];
     const sc = scoreAt(lat, lon);
@@ -233,6 +235,12 @@ export function summarizeLine(
       } else {
         hotMin += m * heatPaceMinPerM((sc + scoreAt(line[k - 1][1], line[k - 1][0])) / 2);
         fastMin += m * fastPaceMinPerM;
+        // Shaded-metre stat: both vertices at least half shaded.
+        if (shadeSampler) {
+          const s1 = shadeSampler(lat, lon);
+          const s0 = shadeSampler(line[k - 1][1], line[k - 1][0]);
+          if (s1 !== null && s0 !== null && (s1 + s0) / 2 >= 0.5) shadedM += m;
+        }
       }
     }
   }
@@ -243,6 +251,7 @@ export function summarizeLine(
     minutesFastPace: fastMin,
     meanHeat: line.length ? scoreSum / line.length : 0,
     maxHeat: scoreMax,
+    shadedM: shadeSampler && shadedM > 0 ? shadedM : undefined,
     ferryM: ferryM && ferryM > 0 ? ferryM : undefined,
   };
 }
