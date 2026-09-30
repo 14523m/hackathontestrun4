@@ -40,10 +40,10 @@ from app.providers.weather import MockWeatherProvider
 
 M_PER_DEG = 111_320.0
 
-# Victoria Harbour channel: territory cells in this central band that lie far
-# from every building are water (the band holds the harbour plus shoreline
-# city — no rural land). Data-driven from the repo's building footprints, so
-# the shoreline lands (Central, TST, Kwun Tong) stay correctly on land.
+# Victoria Harbour basin strip: everything on LAND inside this central band
+# is urbanised on both shores (Central, Causeway Bay, TST, Kwun Tong edge).
+# The channel itself is excluded by the coastline land mask, so this band is
+# used only for the urban/rural classification — never to null cells.
 HARBOUR_BAND = {"lat_min": 22.26, "lat_max": 22.345, "lon_min": 114.09, "lon_max": 114.33}
 
 
@@ -122,9 +122,10 @@ def main() -> None:
           f"[{south:.3f},{north:.3f}]x[{west:.3f},{east:.3f}]")
 
     urban = build_building_mask(spatial, rows, cols, south, west, d_lat, d_lon)
-    # Wider footprint (±600 m) for the harbour water test: a cell in the
-    # central band with NO building within 600 m is channel water.
-    built_wide = build_building_mask(
+    # Wider footprint (±4 lattice cells) widens the urban class so streets
+    # between mapped buildings still read as city. Note: dilation is in
+    # CELLS, so its metre reach scales with --step-m.
+    urban_wide = build_building_mask(
         spatial, rows, cols, south, west, d_lat, d_lon, dilate_cells=4
     )
     print(f"urban cells: {sum(sum(1 for v in r if v) for r in urban)}")
@@ -138,15 +139,12 @@ def main() -> None:
         for j in range(cols):
             lon = west + j * d_lon
             if not is_land(lon, lat):
-                row.append(None)  # open sea / outside HK
+                row.append(None)  # open sea / outside HK (coastline mask)
                 continue
             in_band = (
                 HARBOUR_BAND["lat_min"] <= lat <= HARBOUR_BAND["lat_max"]
                 and HARBOUR_BAND["lon_min"] <= lon <= HARBOUR_BAND["lon_max"]
             )
-            if in_band and not built_wide[i][j]:
-                row.append(None)  # Victoria Harbour channel: water
-                continue
             n_land += 1
             try:
                 dt = datetime(2026, 7, 15, tzinfo=timezone_fixed(8.0)).replace(
@@ -154,11 +152,12 @@ def main() -> None:
                 )
                 pred = service.predict_point(lat, lon, dt)
                 score = float(pred["heatScore"])
-                # Rural default: built-up areas come from the building mask.
-                # Outside them (wooded hills, farmland) the reference raster
-                # expects countryside to read clearly COOLER, so apply a
-                # documented rural-vegetation adjustment.
-                if not urban[i][j]:
+                # Rural default: built-up areas come from the building mask
+                # widened by ±4 cells, plus the whole harbour-basin strip
+                # (dense on both shores). Outside them (wooded hills,
+                # farmland) the reference raster expects countryside to read
+                # clearly COOLER, so apply a documented rural adjustment.
+                if not (urban_wide[i][j] or in_band):
                     score -= 9.0  # documented rural-vegetation adjustment
                     pred["ruralAdjusted"] = True
                 row.append(round(score, 1))
