@@ -828,7 +828,7 @@ function RouteCard({
             checked={route.balance >= 0.5}
             onChange={(e) => onBalance(e.target.checked ? 1 : 0)}
           />
-          Prefer shade &amp; breeze (may take a few minutes longer)
+          Prefer shade &amp; breeze (a bit longer, often quicker in the heat)
         </label>
       </div>
 
@@ -841,10 +841,12 @@ function RouteCard({
           <span>Walking time in today's heat</span>
           <span>{mins(chosen.minutesHotPace)}</span>
         </div>
-        <div className="route-row dim">
-          <span>Fastest way instead</span>
-          <span>{mins(fastest.minutesHotPace)}</span>
-        </div>
+        {chosen !== fastest && (
+          <div className="route-row dim">
+            <span>Shortest way instead ({dist(fastest.distanceM)})</span>
+            <span>{mins(fastest.minutesHotPace)} in the heat</span>
+          </div>
+        )}
         <div className="route-row">
           <span>Feels like, in the shade / sun</span>
           <span>
@@ -866,15 +868,17 @@ function RouteCard({
       {coolerWins && (
         <p className="route-verdict good">
           {winsOnTime && !winsOnHeat
-            ? `Shade route: ${timePhrase} — and it dodges the worst spots.`
+            ? `In today's heat the shade route is actually FASTER (${timePhrase}) — full sun slows you down more than the detour adds. It also dodges the worst spots.`
             : winsOnTime && winsOnHeat
-              ? `Shade route wins both ways: ${timePhrase} and cooler on average.`
-              : `Only +${Math.round(Math.max(0, extraMin))} min vs the fastest way, but noticeably cooler on average (${Math.round(Math.abs(degreesCooler) * 10) / 10} pts less heat, peak ${Math.round(chosen.maxHeat)} vs ${Math.round(fastest.maxHeat)}).`}
+              ? `Shade route wins both ways: ${timePhrase} in the heat, and cooler on average.`
+              : `Only +${Math.round(Math.max(0, extraMin))} min longer than the shortest way, but noticeably cooler (${Math.round(Math.abs(degreesCooler) * 10) / 10} pts less heat, peak ${Math.round(chosen.maxHeat)} vs ${Math.round(fastest.maxHeat)}).`}
         </p>
       )}
       {!coolerWins && (
         <p className="route-verdict">
-          The fastest way is already the coolest sensible option right now.
+          {chosen === fastest
+            ? 'This is the shortest way — and in current conditions no meaningfully cooler detour exists.'
+            : 'The shortest way is about as good on heat right now; no reason to detour.'}
         </p>
       )}
 
@@ -906,8 +910,8 @@ function RouteCard({
       )}
       <p className="route-fineprint">
         {route.plan.source === 'streets'
-          ? 'Follows real streets and footpaths (OpenStreetMap). Times assume a normal walking pace, slowed by heat the way people actually slow down. The dashed grey line is the fastest way, for comparison.'
-          : 'Offline estimate — follows the heat grid, not exact streets. Times assume a normal walking pace, slowed by heat the way people actually slow down. The dashed grey line is the fastest way, for comparison.'}
+          ? 'Follows real streets and footpaths (OpenStreetMap). Times use a heat-aware pace: full sun slows a walker more than a small detour adds, so the shadier way can genuinely be quicker. The dashed grey line is the shortest way, for comparison.'
+          : 'Offline estimate — follows the heat grid, not exact streets. Times use a heat-aware pace: full sun slows a walker more than a small detour adds. The dashed grey line is the shortest way, for comparison.'}
       </p>
     </div>
   );
