@@ -37,6 +37,12 @@ import {
 } from './HeatLayers';
 import { buildTerritoryFeatures } from './territoryRaster';
 import type { TerritoryGrid } from './territoryRaster';
+import {
+  collectBuildingsFromMap,
+  collectGreenFromMap,
+  greenToFC as mapGreenToFC,
+  buildingsToFC as mapBuildingsToFC,
+} from './mapFeatures';
 import { TimeControl, HOUR_STEPS } from './TimeControl';
 import { InspectPanel } from './InspectPanel';
 import { Legend } from './Legend';
@@ -176,8 +182,7 @@ export default function HeatMapPage() {
           if (token !== loadToken.current || !mapRef.current) return;
           setField(vf);
           setHeatData(mapRef.current, cellsToFC(vf.cells));
-          setOverlayData(mapRef.current, SRC.green, greenToFC(vf.cells));
-          setOverlayData(mapRef.current, SRC.buildings, tallBuildingsToFC(vf.cells));
+          refreshRealLayers(mapRef.current);
         })
         .catch(() => undefined)
         .finally(() => token === loadToken.current && setLoading(false));
@@ -234,6 +239,29 @@ export default function HeatMapPage() {
       cancelled = true;
     };
   }, [field]);
+
+  // Real green/building polygons from the basemap's loaded tiles. Re-extract
+  // on every viewport change (tiles load progressively) and when style data
+  // first arrives, so toggled layers show the actual parks and buildings.
+  const refreshRealLayers = useCallback((map: MLMap) => {
+    setOverlayData(map, SRC.green, mapGreenToFC(collectGreenFromMap(map)));
+    setOverlayData(map, SRC.buildings, mapBuildingsToFC(collectBuildingsFromMap(map)));
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    const refresh = () => refreshRealLayers(map);
+    refresh();
+    map.on('moveend', refresh);
+    map.on('sourcedata', (e) => {
+      // Style data arrives in bursts while tiles load; throttled re-extract.
+      if ((e as { sourceId?: string }).sourceId === 'openmaptiles' && map.areTilesLoaded()) refresh();
+    });
+    return () => {
+      map.off('moveend', refresh);
+    };
+  }, [mapReady, refreshRealLayers]);
 
   // Cooling spots near the map centre (all districts, nearest-first).
   useEffect(() => {
@@ -739,6 +767,33 @@ function RouteCard({
           The fastest way is already the coolest sensible option right now.
         </p>
       )}
+
+      {chosen.ferryM ? (
+        <p className="route-verdict" style={{ margin: '6px 0' }}>
+          ⛴️ Includes a ferry crossing ({dist(chosen.ferryM)}) — timed at boat
+          speed plus the usual wait, not walking pace.
+        </p>
+      ) : null}
+
+      {chosen.steps && chosen.steps.length > 0 && (
+        <details className="route-steps">
+          <summary style={{ cursor: 'pointer', fontSize: 12, margin: '6px 0' }}>
+            Turn-by-turn ({chosen.steps.length} streets)
+          </summary>
+          <ol style={{ margin: '4px 0 8px', paddingLeft: 20, fontSize: 12, lineHeight: 1.5 }}>
+            {chosen.steps.slice(0, 30).map((s, i) => (
+              <li key={i} style={{ marginBottom: 2 }}>
+                {s.name} <span style={{ color: 'var(--text-dim)' }}>{dist(s.distanceM)}</span>
+              </li>
+            ))}
+            {chosen.steps.length > 30 && (
+              <li style={{ color: 'var(--text-dim)' }}>
+                …{chosen.steps.length - 30} more
+              </li>
+            )}
+          </ol>
+        </details>
+      )}
       <p className="route-fineprint">
         {route.plan.source === 'streets'
           ? 'Follows real streets and footpaths (OpenStreetMap). Times assume a normal walking pace, slowed by heat the way people actually slow down. The dashed grey line is the fastest way, for comparison.'
@@ -819,41 +874,7 @@ function spotsToFC(spots: CoolingSpot[]): GeoJSON.FeatureCollection {
   };
 }
 
-function greenToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: cells
-      .filter((c) => c.vegetationScore >= 0.45)
-      .map((c) => ({
-        type: 'Feature' as const,
-        id: `g-${c.cellId}`,
-        properties: {},
-        geometry: {
-          type: 'Polygon' as const,
-          coordinates: [[...c.polygon, c.polygon[0]]],
-        },
-      })),
-  };
-}
 
-/** Cells hemmed in by tall buildings — the streets where heat lingers
- *  after sunset. Same data the heat score uses, shown on its own layer. */
-function tallBuildingsToFC(cells: HeatCell[]): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: cells
-      .filter((c) => c.buildingDensity >= 0.5)
-      .map((c) => ({
-        type: 'Feature' as const,
-        id: `b-${c.cellId}`,
-        properties: {},
-        geometry: {
-          type: 'Polygon' as const,
-          coordinates: [[...c.polygon, c.polygon[0]]],
-        },
-      })),
-  };
-}
 
 function fmtHour(h: number): string {
   const hh = Math.floor(h);

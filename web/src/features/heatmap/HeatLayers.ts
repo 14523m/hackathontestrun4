@@ -107,7 +107,20 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
       id: LYR.buildings,
       type: 'fill',
       source: SRC.buildings,
-      paint: { 'fill-color': '#8f9aa8', 'fill-opacity': 0.35 },
+      // Real building footprints coloured by height (from the basemap's
+      // vector tiles); fallback model cells have no height and land grey.
+      paint: {
+        'fill-color': [
+          'interpolate',
+          ['linear'],
+          ['coalesce', ['get', 'renderHeight'], 0] as never,
+          0, '#8f9aa8',
+          40, '#7c8aa0',
+          80, '#5d6f8a',
+          150, '#39496b',
+        ] as never,
+        'fill-opacity': 0.45,
+      },
     },
     {
       // DIRECT score->color: every cell paints its exact turbo color, matching

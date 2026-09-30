@@ -70,6 +70,8 @@ export interface RouteSummary {
   maxHeat: number;
   /** Metres travelled on ferry legs (OSRM routes may include one). */
   ferryM?: number;
+  /** Bilingual turn-by-turn street names (OSRM), metres along the route. */
+  steps?: { name: string; distanceM: number }[];
 }
 
 export interface RoutePlan {
@@ -345,9 +347,14 @@ export async function planRouteAccurate(
     const routes = await osrmRoutes(start, end);
     if (routes) {
       for (const r of routes) {
-        candidates.push(
-          summarizeLine(r.line, sampler, heatPaceMinPerM, FAST_PACE_MIN_PER_M, r.distanceM, r.ferryM),
+        const summary = summarizeLine(
+          r.line, sampler, heatPaceMinPerM, FAST_PACE_MIN_PER_M, r.distanceM, r.ferryM,
         );
+        // Carry the bilingual turn-by-turn (street names only) for the card.
+        summary.steps = r.steps
+          .filter((s) => s.name && s.distanceM >= 5)
+          .map((s) => ({ name: s.name, distanceM: s.distanceM }));
+        candidates.push(summary);
       }
     }
   } catch {
