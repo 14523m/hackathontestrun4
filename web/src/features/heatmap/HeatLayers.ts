@@ -20,6 +20,7 @@ export const SRC = {
   routeFast: 'route-fast-src',
   routePts: 'route-pts-src',
   transit: 'transit-src',
+  civicSites: 'civic-src',
 } as const;
 
 export const LYR = {
@@ -36,6 +37,7 @@ export const LYR = {
   coolingDots: 'cooling-dots',
   coolingIcons: 'cooling-icons',
   coolingLabels: 'cooling-labels',
+  civicSites: 'civic-dots',
 } as const;
 
 /** OpenFreeMap free vector basemap (no API key). HK detail included. */
@@ -87,6 +89,7 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
     [SRC.routeFast]: { type: 'geojson', data: EMPTY_FC },
     [SRC.routePts]: { type: 'geojson', data: EMPTY_FC },
     [SRC.transit]: { type: 'geojson', data: EMPTY_FC },
+    [SRC.civicSites]: { type: 'geojson', data: EMPTY_FC },
   };
 
   const layers: LayerSpecification[] = [
@@ -260,6 +263,21 @@ export function addHeatSourcesAndLayers(map: maplibregl.Map): void {
         'text-color': '#e6edf3',
         'text-halo-color': '#0d1117',
         'text-halo-width': 1.5,
+      },
+    },
+    {
+      // Cooling siting proposals (optimizer output): orange halo = benefit
+      // radius feel, solid dot = exact site. Circles only — no glyph fonts,
+      // so they render even on the bare offline style.
+      id: LYR.civicSites,
+      type: 'circle',
+      source: SRC.civicSites,
+      paint: {
+        'circle-radius': 13,
+        'circle-color': '#f97316',
+        'circle-opacity': 0.2,
+        'circle-stroke-color': '#f97316',
+        'circle-stroke-width': 1.5,
       },
     },
   ];

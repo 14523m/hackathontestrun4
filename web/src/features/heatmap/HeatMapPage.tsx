@@ -52,6 +52,7 @@ import { planRouteAccurate } from './coolRoute';
 import type { RoutePlan, RoutePoint } from './coolRoute';
 import { fetchTransitPlan } from './transitApi';
 import type { TransitItinerary } from './transitApi';
+import { CivicPanel } from './CivicPanel';
 import {
   boundsOfCells,
   prefetchStreetsForMap,
@@ -81,6 +82,11 @@ const BARE_STYLE: StyleSpecification = {
 };
 
 type PickMode = 'idle' | 'picking-start' | 'picking-end';
+
+/** Same endpoint pair? Compares at ~1 m so float jitter doesn't count. */
+function sameEndpoint(a: RoutePoint, b: RoutePoint): boolean {
+  return Math.abs(a.lat - b.lat) < 1e-5 && Math.abs(a.lon - b.lon) < 1e-5;
+}
 
 interface RouteUi {
   start: RoutePoint;
@@ -127,6 +133,10 @@ export default function HeatMapPage() {
   // effect that reads them (hooks must not be used before declaration).
   const [transitOptions, setTransitOptions] = useState<TransitItinerary[]>([]);
   const [showTransit, setShowTransit] = useState(true);
+  // The endpoints those itineraries were computed FOR. A route whose
+  // endpoints differ (re-drawn by clicking the map, or a moved pin) hides
+  // them — otherwise a stale MTR line overlays a walk it never served.
+  const [transitFor, setTransitFor] = useState<{ start: RoutePoint; end: RoutePoint } | null>(null);
   // Whole-territory raster (kept in a ref too: routes need it as the
   // anywhere-sampler, and a ref avoids re-subscribing the click handler).
   const territoryRef = useRef<TerritoryGrid | null>(null);
@@ -313,11 +323,18 @@ export default function HeatMapPage() {
     setLayerVisible(map, LYR.buildings, showBuildings);
   }, [mapReady, showGreen, showHeat, showCooling, showBuildings, showTerritory, field]);
 
+  // Transit overlay + panel are only valid while the current route is the
+  // one the itineraries were planned for.
+  const transitMatchesRoute =
+    !!route && !!transitFor &&
+    sameEndpoint(route.start, transitFor.start) &&
+    sameEndpoint(route.end, transitFor.end);
+
   // --- transit leg drawing ----------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!mapReady || !map) return;
-    const shown = showTransit && transitOptions.length > 0 ? transitOptions[0] : null;
+    const shown = showTransit && transitMatchesRoute ? transitOptions[0] : null;
     if (shown) {
       setOverlayData(map, SRC.transit, {
         type: 'FeatureCollection',
@@ -331,7 +348,7 @@ export default function HeatMapPage() {
     } else {
       setOverlayData(map, SRC.transit, emptyFc());
     }
-  }, [mapReady, transitOptions, showTransit]);
+  }, [mapReady, transitMatchesRoute, transitOptions, showTransit]);
 
   // --- route drawing ----------------------------------------------------------
   useEffect(() => {
@@ -398,6 +415,7 @@ export default function HeatMapPage() {
           setPickMode('picking-end');
         }
         setRoute(null);
+        setTransitFor(null);
         return;
       }
 
@@ -509,7 +527,9 @@ export default function HeatMapPage() {
             hour,
           });
         }
-        setTransitOptions(transit?.itineraries ?? []);
+        const its = transit?.itineraries ?? [];
+        setTransitOptions(its);
+        setTransitFor(its.length > 0 ? { start, end } : null);
         setPickMode('idle');
         setPendingStart(null);
         setPendingEnd(null);
@@ -625,10 +645,11 @@ export default function HeatMapPage() {
             route={route}
             onBalance={setBalance}
             onClose={() => {
-              setRoute(null);
-              setPickMode('idle');
-              setPendingStart(null);
-            }}
+        setRoute(null);
+        setTransitFor(null);
+        setPickMode('idle');
+        setPendingStart(null);
+      }}
           />
         )}
 
@@ -677,7 +698,7 @@ export default function HeatMapPage() {
           <p style={{ margin: '-6px 0 10px', fontSize: 12, color: '#f88' }}>{searchError}</p>
         )}
 
-        {transitOptions.length > 0 && (
+        {transitOptions.length > 0 && transitMatchesRoute && (
           <div style={{ marginBottom: 12 }}>
             <div
               style={{
@@ -737,6 +758,14 @@ export default function HeatMapPage() {
             </p>
           </div>
         )}
+
+        <CivicPanel
+          reportAt={route?.end ?? route?.start ?? null}
+          cells={field?.cells ?? []}
+          hour={hour}
+          mapReady={mapReady}
+          map={mapRef.current}
+        />
 
         <div className="howto">
           <p style={{ margin: '0 0 6px' }}>

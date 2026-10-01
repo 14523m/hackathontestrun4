@@ -354,7 +354,14 @@ class MinHeap {
   }
 }
 
-function snap(net: StreetNet, p: RoutePoint): string | null {
+/**
+ * Nearest walkable node to a route endpoint, plus the straight-line stub
+ * (metres) between the TRUE endpoint and that node. Callers prepend/append
+ * the real endpoint to the traced path so routes start and end exactly
+ * where the user pointed — the snapped node alone could be up to 300 m
+ * away, silently inflating or deflating the measured distance.
+ */
+function snap(net: StreetNet, p: RoutePoint): { key: string; stubM: number } | null {
   let best: string | null = null;
   let bestD = Infinity;
   const cosLat = Math.cos((p.lat * Math.PI) / 180);
@@ -368,7 +375,7 @@ function snap(net: StreetNet, p: RoutePoint): string | null {
       best = k;
     }
   }
-  return bestD <= SNAP_RADIUS_M ? best : null;
+  return best && bestD <= SNAP_RADIUS_M ? { key: best, stubM: bestD } : null;
 }
 
 /**
@@ -389,7 +396,7 @@ export function planOnStreets(
 ): StreetRouteSummary | null {
   const s = snap(net, start);
   const e = snap(net, end);
-  if (!s || !e || s === e) return null;
+  if (!s || !e || s.key === e.key) return null;
 
   const scoreOf = (k: string): number => {
     const n = net.nodes.get(k);
@@ -402,16 +409,16 @@ export function planOnStreets(
     return n ? speedOf(n.lat, n.lon) : 1;
   };
 
-  const dist = new Map<string, number>([[s, 0]]);
+  const dist = new Map<string, number>([[s.key, 0]]);
   const prev = new Map<string, string>();
   const done = new Set<string>();
   const heap = new MinHeap();
-  heap.push(0, s);
+  heap.push(0, s.key);
   while (heap.size > 0) {
     const u = heap.pop() as string;
     if (done.has(u)) continue;
     done.add(u);
-    if (u === e) break;
+    if (u === e.key) break;
     const un = net.nodes.get(u);
     if (!un) continue;
     const uScore = scoreOf(u);
@@ -429,44 +436,53 @@ export function planOnStreets(
       }
     }
   }
-  if (!done.has(e)) return null;
+  if (!done.has(e.key)) return null;
 
   // Trace and measure.
-  const sNode = net.nodes.get(s);
+  const sNode = net.nodes.get(s.key);
   if (!sNode) return null;
   const pts: { lat: number; lon: number }[] = [];
-  let cur: string | undefined = e;
+  let cur: string | undefined = e.key;
   let reachedStart = false;
   while (cur !== undefined) {
     const n = net.nodes.get(cur);
     if (!n) return null;
     pts.push({ lat: n.lat, lon: n.lon });
-    if (cur === s) {
+    if (cur === s.key) {
       reachedStart = true;
       break;
     }
     cur = prev.get(cur);
   }
   if (!reachedStart || pts.length < 2) return null;
+  // Snap nodes bound the walk; the TRUE endpoints bookend it so the line
+  // and the distance start/end exactly where the user pointed.
+  pts.push({ lat: start.lat, lon: start.lon }); // reverse() moves this to the front
   pts.reverse();
+  pts.push({ lat: end.lat, lon: end.lon });
 
   let distanceM = 0;
   let hotMin = 0;
   let fastMin = 0;
   let scoreSum = 0;
   let scoreMax = 0;
+  let prevSc = 0;
   for (let i = 0; i < pts.length; i++) {
-    const sc = scoreOf(key(pts[i].lat, pts[i].lon));
+    // Bookends aren't street nodes — sample the heat field at their real
+    // position (scoreOf's node lookup would neutral-score them).
+    const node = net.nodes.get(key(pts[i].lat, pts[i].lon));
+    const sc = node ? scoreOf(key(pts[i].lat, pts[i].lon)) : (sampler(pts[i].lat, pts[i].lon) ?? 55);
     scoreSum += sc;
     scoreMax = Math.max(scoreMax, sc);
     if (i > 0) {
       const q = pts[i - 1];
       const len = haversineM(q.lat, q.lon, pts[i].lat, pts[i].lon);
       distanceM += len;
-      const mean = (sc + scoreOf(key(q.lat, q.lon))) / 2;
+      const mean = (sc + prevSc) / 2;
       hotMin += len * heatPaceMinPerM(mean);
       fastMin += len * fastPaceMinPerM;
     }
+    prevSc = sc;
   }
   return {
     line: pts.map((p) => [p.lon, p.lat] as [number, number]),

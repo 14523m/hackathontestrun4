@@ -71,8 +71,10 @@ app = FastAPI(
     ),
 )
 from app.routes.transit import router as transit_router
+from app.routes.civic import router as civic_router
 
 app.include_router(transit_router)
+app.include_router(civic_router)
 
 app.add_middleware(
     CORSMiddleware,
