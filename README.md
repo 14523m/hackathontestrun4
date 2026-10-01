@@ -43,7 +43,24 @@ cd backend && setup.bat
 
 Open http://localhost:8000/docs for the interactive API.
 
-### 2. Mobile (Expo, iOS/Android)
+### 2. Web app (React + Vite)
+
+The website is a separate build: a fresh clone has no `web/dist/`, so
+`http://localhost:8000` shows a **blank page** until you build it.
+
+```bash
+cd web && npm install && npm run build
+```
+
+Restart the backend and open http://localhost:8000 — FastAPI now serves the
+site from `web/dist`. For live-reload development, use the Vite dev server
+instead (it proxies `/api` to the backend on :8000):
+
+```bash
+cd web && npm run dev     # http://localhost:5173
+```
+
+### 3. Mobile (Expo, iOS/Android)
 
 ```bash
 cd mobile
@@ -63,7 +80,7 @@ Verify from the phone's browser at `http://<LAN-IP>:8000/health` — campus
 Wi-Fi that blocks device-to-device traffic (client isolation) will fail here;
 use a personal-hotspot connection instead.
 
-### 3. Docker (backend only)
+### 4. Docker (backend + web)
 
 ```bash
 docker compose up --build

@@ -115,6 +115,14 @@ def root() -> Any:
         "version": settings.api_version,
         "dataMode": settings.data_mode,
         "docs": "/docs",
+        "webUi": {
+            "available": False,
+            "hint": (
+                "Blank page at '/'? The web UI is not built yet. Run "
+                "`cd web && npm install && npm run build`, then restart this "
+                "API — until then only this JSON and /docs are served."
+            ),
+        },
         "endpoints": [
             "/districts", "/heatmap", "/routes", "/cooling-spots",
             "/crowd-reports", "/planner/compare", "/planner/northern-metropolis",
